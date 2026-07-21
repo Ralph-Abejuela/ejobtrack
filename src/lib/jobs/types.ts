@@ -12,6 +12,7 @@ export enum JobStatus {
 export enum JobPlatform {
 	JOBSTREET = "jobstreet",
 	LINKEDIN = "linkedin",
+	INDEED = "indeed",
 }
 
 export interface JobStatusChange {
@@ -73,6 +74,7 @@ export interface JobPlatformParser {
 		subject: string;
 		snippet: string;
 		body: string;
+		bodyHtml?: string;
 		id: string;
 		internalDate: string;
 	}):

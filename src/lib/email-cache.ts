@@ -116,9 +116,10 @@ export async function hasCachedEmail(
 export async function updateEmailBody(
 	id: string,
 	body: string,
+	bodyHtml: string,
 	bodyType: "text/plain" | "text/html" | "unknown",
 ): Promise<void> {
-	await db.emails.update(id, { body, bodyType });
+	await db.emails.update(id, { body, bodyHtml, bodyType });
 }
 
 /** Clear cached emails for a specific user. */

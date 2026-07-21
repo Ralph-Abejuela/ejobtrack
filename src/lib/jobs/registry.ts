@@ -1,10 +1,31 @@
 import type { JobPlatformParser, JobApplication } from "./types";
 import { jobstreetParser } from "./jobstreet";
 import { linkedinParser } from "./linkedin";
+import { indeedParser } from "./indeed";
 import { genericParser, extractEmail } from "./generic";
 
+/**
+ * Emails whose full From header matches these strings are skipped entirely.
+ * Format: "Sender Name <sender@email.com>" — the same as Gmail's From header.
+ * Add new non-job senders here as they appear.
+ */
+const IGNORE_SENDERS = [
+	"LinkedIn <jobs-listings@linkedin.com>",
+	"Jobstreet Reminders <noreply@e.jobstreet.com>",
+	"linkedin@em.linkedin.com",
+	"LinkedIn <updates-noreply@linkedin.com>",
+	"Jobstreet Onboarding <noreply@e.jobstreet.com>",
+	"LiNa Recommendations <noreply@e.jobstreet.com>",
+	"LinkedIn <billing-noreply@linkedin.com>",
+	"SEEK Pass Support <support@seekpass.co>",
+];
+
 /** Registry of all platform-specific parsers. Add new parsers here. */
-const platformParsers: JobPlatformParser[] = [jobstreetParser, linkedinParser];
+const platformParsers: JobPlatformParser[] = [
+	jobstreetParser,
+	linkedinParser,
+	indeedParser,
+];
 
 /** Map from email from-address to the matching parser. */
 const fromMap = new Map<string, JobPlatformParser>();
@@ -28,6 +49,7 @@ export function parseEmail(email: {
 	subject: string;
 	snippet: string;
 	body: string;
+	bodyHtml?: string;
 	id: string;
 	internalDate: string;
 }):
@@ -36,6 +58,16 @@ export function parseEmail(email: {
 			"id" | "userEmail" | "createdAt" | "updatedAt" | "history"
 	  >[]
 	| null {
+	// Skip known non-job senders (full From header match)
+	if (
+		IGNORE_SENDERS.some(
+			(s) => s.toLowerCase().match(email.from.trim().toLowerCase()),
+		)
+	) {
+	  console.log(email.from.trim().toLowerCase(), "===", IGNORE_SENDERS)
+		return null;
+	}
+
 	const emailAddr = extractEmail(email.from);
 	if (!emailAddr) return null;
 

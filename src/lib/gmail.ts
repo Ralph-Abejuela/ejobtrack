@@ -2,6 +2,16 @@
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
+/**
+ * Called when any Gmail API call gets a 401 response.
+ * Auth system wires this to signOut so expired tokens trigger re-login.
+ */
+let _onUnauthorized: (() => void) | null = null;
+
+export function setOnUnauthorized(cb: () => void): void {
+	_onUnauthorized = cb;
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface GmailMessageListItem {
@@ -47,6 +57,7 @@ export interface ParsedEmail {
 	date: string;
 	snippet: string;
 	body: string;
+	bodyHtml?: string;
 	bodyType: "text/plain" | "text/html" | "unknown";
 	labelIds: string[];
 	internalDate: string;
@@ -74,28 +85,37 @@ function decodeBase64(data: string): string {
 
 function extractBody(part: GmailMessagePart): {
 	body: string;
+	bodyHtml: string;
 	type: "text/plain" | "text/html" | "unknown";
 } {
-	if (
-		part.body?.data &&
-		(part.mimeType === "text/plain" || part.mimeType === "text/html")
-	) {
-		return {
-			body: decodeBase64(part.body.data),
-			type: part.mimeType === "text/plain" ? "text/plain" : "text/html",
-		};
-	}
-	if (part.parts) {
-		for (const p of part.parts) {
-			const result = extractBody(p);
-			if (result.body && result.type === "text/plain") return result;
+	let textPlain = "";
+	let textHtml = "";
+
+	function walk(p: GmailMessagePart) {
+		if (p.body?.data) {
+			if (p.mimeType === "text/plain") {
+				textPlain = decodeBase64(p.body.data);
+			} else if (p.mimeType === "text/html") {
+				textHtml = decodeBase64(p.body.data);
+			}
 		}
-		for (const p of part.parts) {
-			const result = extractBody(p);
-			if (result.body) return result;
+		if (p.parts) {
+			for (const child of p.parts) walk(child);
 		}
 	}
-	return { body: "", type: "unknown" };
+
+	walk(part);
+
+	// Prefer text/plain (cleanest). Store bodyHtml for parsers that need rich HTML (e.g. Indeed).
+	if (textPlain) {
+		return { body: textPlain, bodyHtml: textHtml, type: "text/plain" };
+	}
+
+	if (textHtml) {
+		return { body: stripHtml(textHtml), bodyHtml: textHtml, type: "text/html" };
+	}
+
+	return { body: "", bodyHtml: "", type: "unknown" };
 }
 
 function stripHtml(html: string): string {
@@ -117,8 +137,7 @@ function stripHtml(html: string): string {
 
 export function parseMessage(msg: GmailMessage): ParsedEmail {
 	const headers = msg.payload.headers;
-	const { body, type } = extractBody(msg.payload);
-	const cleanBody = type === "text/html" ? stripHtml(body) : body;
+	const { body, bodyHtml, type } = extractBody(msg.payload);
 
 	return {
 		id: msg.id,
@@ -128,7 +147,8 @@ export function parseMessage(msg: GmailMessage): ParsedEmail {
 		to: getHeader(headers, "To"),
 		date: getHeader(headers, "Date"),
 		snippet: msg.snippet,
-		body: cleanBody,
+		body,
+		bodyHtml: bodyHtml || undefined,
 		bodyType: type,
 		labelIds: msg.labelIds,
 		internalDate: msg.internalDate,
@@ -184,6 +204,7 @@ export async function listMessages(
 	const res = await fetch(url, { headers: authHeaders(accessToken) });
 
 	if (!res.ok) {
+		if (res.status === 401) _onUnauthorized?.();
 		const err = await res.text();
 		throw new Error(`Gmail API list failed: ${res.status} — ${err}`);
 	}
@@ -211,6 +232,7 @@ export async function getMessage(
 	const res = await fetch(url, { headers: authHeaders(accessToken) });
 
 	if (!res.ok) {
+		if (res.status === 401) _onUnauthorized?.();
 		const err = await res.text();
 		throw new Error(`Gmail API get failed: ${res.status} — ${err}`);
 	}
@@ -268,9 +290,12 @@ export async function fetchEmailsPageMeta(
 export async function fetchMessageBody(
 	accessToken: string,
 	messageId: string,
-): Promise<{ body: string; bodyType: "text/plain" | "text/html" | "unknown" }> {
+): Promise<{
+	body: string;
+	bodyHtml: string;
+	bodyType: "text/plain" | "text/html" | "unknown";
+}> {
 	const msg = await getMessage(accessToken, messageId, "full");
-	const { body, type } = extractBody(msg.payload);
-	const cleanBody = type === "text/html" ? stripHtml(body) : body;
-	return { body: cleanBody, bodyType: type };
+	const { body, bodyHtml, type } = extractBody(msg.payload);
+	return { body, bodyHtml, bodyType: type };
 }

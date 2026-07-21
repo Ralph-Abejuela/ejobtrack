@@ -9,6 +9,7 @@ import {
 	useEffect,
 	useRef,
 } from "react";
+import { setOnUnauthorized } from "./gmail";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -200,6 +201,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		});
 		gmailTokenClientRef.current = null;
 	}, [state.accessToken, state.idToken]);
+
+	// Wire 401 → signOut
+	useEffect(() => {
+		setOnUnauthorized(signOut);
+	}, [signOut]);
 
 	// --- Request Gmail scope (user gesture) ---
 	const requestGmailScope = useCallback(async (): Promise<string | null> => {

@@ -5,6 +5,7 @@ import { parseEmail } from "@/lib/jobs/registry";
 import { getAllJobs, getStatusCounts, storeJob } from "@/lib/jobs-db";
 import { markScanned, isScanned } from "@/lib/jobs-cache";
 import type { JobApplication } from "@/lib/jobs/types";
+import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
 
@@ -43,7 +44,7 @@ async function processEmails(
 	const scannedIds: string[] = [];
 
 	for (const email of emails) {
-		console.log(email)
+		console.log(email);
 		if (await isScanned(email.id)) continue;
 		scannedIds.push(email.id);
 
@@ -53,13 +54,38 @@ async function processEmails(
 		const existing = await getAllJobs(userEmail);
 
 		for (const result of results) {
-			const jobId = `${userEmail}:${result.platform}:${result.company
+			const normalizedCompany = result.company
 				.toLowerCase()
-				.replace(/\s+/g, " ")}:${result.jobTitle
+				.replace(/\s+/g, " ");
+			const normalizedTitle = result.jobTitle
 				.toLowerCase()
-				.replace(/\s+/g, " ")}`;
+				.replace(/\s+/g, " ");
+			const jobId = `${userEmail}:${result.platform}:${normalizedCompany}:${normalizedTitle}`;
 
-			const dup = existing.find((j) => j.id === jobId);
+			// 1. Exact match by ID
+			let dup = existing.find((j) => j.id === jobId);
+
+			// 2. Fuzzy match: same platform + same title, different but similar company
+			if (!dup) {
+				const fuzzy = existing.filter(
+					(j) =>
+						j.platform === result.platform &&
+						j.jobTitle.toLowerCase().replace(/\s+/g, " ") === normalizedTitle &&
+						j.id !== jobId &&
+						stringSimilarity(j.company, result.company) >=
+							COMPANY_SIMILARITY_THRESHOLD,
+				);
+				if (fuzzy.length > 0) {
+					// Use the more complete company name
+					fuzzy.sort((a, b) => b.company.length - a.company.length);
+					dup = fuzzy[0];
+					// Update existing record with fuller company name
+					dup.company =
+						result.company.length > dup.company.length
+							? result.company
+							: dup.company;
+				}
+			}
 
 			if (dup) {
 				if (dup.emailId === email.id) continue;
