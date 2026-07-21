@@ -82,9 +82,16 @@ function JobsContent() {
 
 	const handleToggleExpand = useCallback(
 		(jobId: string) => {
-			setExpandedJob(expandedJob === jobId ? null : jobId);
+			if (expandedJob === jobId) {
+				setExpandedJob(null); // collapse
+			} else {
+				setExpandedJob(jobId);
+				// Reset email view to this job's latest email
+				const newJob = jobs.find((j) => j.id === jobId);
+				if (newJob) setActiveEmailId(newJob.emailId);
+			}
 		},
-		[expandedJob, setExpandedJob],
+		[expandedJob, setExpandedJob, jobs, setActiveEmailId],
 	);
 
 	return (
