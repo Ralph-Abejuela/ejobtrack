@@ -35,8 +35,12 @@ export const linkedinParser: JobPlatformParser = {
 	platform: JobPlatform.LINKEDIN,
 	fromAddresses: [
 		"jobs-noreply@linkedin.com",
+		"messages-noreply@linkedin.com",
 		"hit-reply@linkedin.com",
 		"inmail-hit-reply@linkedin.com",
+	],
+	ignorePatterns: [
+		/people you may know|mutual connection|pymk|work anniversary|congratulate|profile views|\badd\s+[A-Z][a-z]+\s/i,
 	],
 
 	parse(email) {
@@ -237,19 +241,21 @@ export const linkedinParser: JobPlatformParser = {
 
 		if (!company) return null;
 
-		return {
-			platform: JobPlatform.LINKEDIN,
-			jobTitle: jobTitle || "Unknown Position",
-			company,
-			status,
-			body: email.body,
-			snippet: email.snippet,
-			subject: email.subject,
-			from: email.from,
-			url: extractLinkedInUrl(email.body),
-			date: new Date(Number(email.internalDate)).toISOString(),
-			emailId: email.id,
-		};
+		return [
+			{
+				platform: JobPlatform.LINKEDIN,
+				jobTitle: jobTitle || "Unknown Position",
+				company,
+				status,
+				body: email.body,
+				snippet: email.snippet,
+				subject: email.subject,
+				from: email.from,
+				url: extractLinkedInUrl(email.body),
+				date: new Date(Number(email.internalDate)).toISOString(),
+				emailId: email.id,
+			},
+		];
 	},
 };
 

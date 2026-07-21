@@ -1,40 +1,28 @@
-import type { JobPlatformParser } from "./types";
+import type { JobPlatformParser, JobApplication } from "./types";
 import { jobstreetParser } from "./jobstreet";
 import { linkedinParser } from "./linkedin";
+import { genericParser, extractEmail } from "./generic";
 
-/** Registry of all platform parsers. Add new parsers here. */
-const parsers: JobPlatformParser[] = [jobstreetParser, linkedinParser];
+/** Registry of all platform-specific parsers. Add new parsers here. */
+const platformParsers: JobPlatformParser[] = [jobstreetParser, linkedinParser];
 
 /** Map from email from-address to the matching parser. */
 const fromMap = new Map<string, JobPlatformParser>();
-for (const p of parsers) {
+for (const p of platformParsers) {
 	for (const addr of p.fromAddresses) {
 		fromMap.set(addr.toLowerCase(), p);
 	}
 }
 
-/** Get all known job-related from-addresses (for Gmail API query). */
-export function getJobFromAddresses(): string[] {
-	const addrs: string[] = [];
-	for (const p of parsers) {
-		addrs.push(...p.fromAddresses);
-	}
-	return addrs;
+/** Find a platform-specific parser by email address. */
+function findPlatformParser(emailAddr: string): JobPlatformParser | undefined {
+	return fromMap.get(emailAddr.toLowerCase());
 }
 
-/** Build a Gmail API q-string that matches all job senders. */
-export function buildJobQuery(): string {
-	return getJobFromAddresses()
-		.map((a) => `from:${a}`)
-		.join(" OR ");
-}
-
-/** Find parser by email from-address. */
-export function findParser(from: string): JobPlatformParser | undefined {
-	return fromMap.get(from.toLowerCase());
-}
-
-/** Run all parsers against an email. Returns first match or null. */
+/**
+ * Run platform-specific parsers first, then fall back to generic parser.
+ * Returns the first match or null.
+ */
 export function parseEmail(email: {
 	from: string;
 	subject: string;
@@ -42,13 +30,31 @@ export function parseEmail(email: {
 	body: string;
 	id: string;
 	internalDate: string;
-}) {
-	const properEmail = email.from.match('<\.+@\.+>$')?.[0]?.slice(1,-1);
-	if(!properEmail) return null;
-	console.log(properEmail)
-	const parser = findParser(properEmail);
-	if (!parser) return null;
-	return parser.parse(email);
+}):
+	| Omit<
+			JobApplication,
+			"id" | "userEmail" | "createdAt" | "updatedAt" | "history"
+	  >[]
+	| null {
+	const emailAddr = extractEmail(email.from);
+	if (!emailAddr) return null;
+
+	// 1. Try platform-specific parsers
+	const platformParser = findPlatformParser(emailAddr);
+	if (platformParser) {
+		// Check ignore patterns before parsing
+		const ignoreText = `${email.subject} ${email.snippet}`;
+		if (platformParser.ignorePatterns?.some((p) => p.test(ignoreText))) {
+			return null;
+		}
+		const result = platformParser.parse(email);
+		if (result && result.length > 0) return result;
+	}
+
+	// 2. Fall back to generic parser
+	const result = genericParser.parse(email);
+	if (result && result.length > 0) return result;
+	return null;
 }
 
-export { parsers };
+export { platformParsers as parsers };

@@ -13,6 +13,7 @@ import { JobPlatform, JobStatus, type JobPlatformParser } from "./types";
  *   - Subject: "Your application was successfully submitted"
  *   - Subject: "{Company} has viewed your application for {Role}"
  *   - Subject: "Application update for {Role} at {Company}"
+ *   - Subject: "the {Role} job with {Company} has closed"
  *   - Snippet/Body: "your application for {Role} was successfully submitted to {Company}"
  *   - Snippet/Body: "your application for {Role} advertised by {Company}"
  *   - Snippet/Body: "your application for {Role} is unlikely to progress"
@@ -25,8 +26,16 @@ import { JobPlatform, JobStatus, type JobPlatformParser } from "./types";
 export const jobstreetParser: JobPlatformParser = {
 	platform: JobPlatform.JOBSTREET,
 	fromAddresses: ["noreply@e.jobstreet.com"],
+	ignorePatterns: [
+		/is still accepting applications|don't forget to (?:submit|apply)|complete the application you have started|application started/i,
+	],
 
 	parse(email) {
+		// ── Bulk activity summary ──
+		if (/new activity in jobs you applied for/i.test(email.subject)) {
+			return parseBulkActivity(email);
+		}
+
 		const { subject, snippet, body } = email;
 
 		let jobTitle = "";
@@ -57,6 +66,16 @@ export const jobstreetParser: JobPlatformParser = {
 			if (updateSubjectMatch[1]) jobTitle = updateSubjectMatch[1].trim();
 			if (updateSubjectMatch[2]) company = updateSubjectMatch[2].trim();
 			// Status determined from body
+		}
+
+		// Job closed/expired subject: "the {Role} job with {Company} has closed"
+		const closedSubjectMatch = lowerSubject.match(
+			/the (.+?) job with (.+?) has closed/i,
+		);
+		if (closedSubjectMatch) {
+			if (!jobTitle) jobTitle = closedSubjectMatch[1].trim();
+			if (!company) company = closedSubjectMatch[2].trim();
+			status = JobStatus.REJECTED;
 		}
 
 		// ── Extract from snippet patterns ──
@@ -152,6 +171,18 @@ export const jobstreetParser: JobPlatformParser = {
 			}
 		}
 
+		// "the {Role} job you applied for at {Company} has expired/closed"
+		if (!jobTitle) {
+			const closedBodyMatch = lowerBody.match(
+				/the (.+?) job you applied for at (.+?) has (?:expired|closed)/i,
+			);
+			if (closedBodyMatch) {
+				if (!jobTitle) jobTitle = closedBodyMatch[1].trim();
+				if (!company) company = closedBodyMatch[2].trim();
+				status = JobStatus.REJECTED;
+			}
+		}
+
 		// "your application for {Role}" without company
 		if (!jobTitle) {
 			const appMatch = lowerBody.match(
@@ -186,7 +217,7 @@ export const jobstreetParser: JobPlatformParser = {
 				/(?:looks|appears)\s+unlikely/i.test(
 					lowerSubject + " " + lowerSnippet + " " + lowerBody,
 				) ||
-				/unsuccessful|unfortunately|not moving forward|not selected|regret to inform/i.test(
+				/unsuccessful|unfortunately|not moving forward|not selected|regret to inform|has expired|has closed|no longer taking applications/i.test(
 					lowerSubject + " " + lowerSnippet + " " + lowerBody,
 				)
 			) {
@@ -218,21 +249,59 @@ export const jobstreetParser: JobPlatformParser = {
 
 		if (!jobTitle) return null;
 
-		return {
-			platform: JobPlatform.JOBSTREET,
-			jobTitle,
-			company: company || "Unknown Company",
-			status,
-			body: email.body,
-			snippet: email.snippet,
-			subject: email.subject,
-			from: email.from,
-			url: extractJobstreetUrl(email.body),
-			date: new Date(Number(email.internalDate)).toISOString(),
-			emailId: email.id,
-		};
+		return [
+			{
+				platform: JobPlatform.JOBSTREET,
+				jobTitle,
+				company: company || "Unknown Company",
+				status,
+				body: email.body,
+				snippet: email.snippet,
+				subject: email.subject,
+				from: email.from,
+				url: extractJobstreetUrl(email.body),
+				date: new Date(Number(email.internalDate)).toISOString(),
+				emailId: email.id,
+			},
+		];
 	},
 };
+
+/**
+ * Parse a mangled date like "14Jul" with the email's year.
+ * If the constructed date is after the email date (e.g. Dec job with Jan email),
+ * we guessed the wrong year — use the previous year instead.
+ */
+function parseMangledDate(mangled: string, emailInternalDate: string): string {
+	const dayMatch = mangled.match(/^(\d{1,2})/);
+	const monthMatch = mangled.match(/[A-Za-z]{3}/);
+	if (!dayMatch || !monthMatch) {
+		return new Date(Number(emailInternalDate)).toISOString();
+	}
+
+	const day = Number(dayMatch[1]);
+	const monthAbbr = monthMatch[0];
+	const monthStr =
+		monthAbbr.charAt(0).toUpperCase() + monthAbbr.slice(1).toLowerCase();
+
+	const emailDate = new Date(Number(emailInternalDate));
+	const emailYear = emailDate.getFullYear();
+
+	// Build date with the email's year
+	let candidate = new Date(`${monthStr} ${day}, ${emailYear}`);
+
+	// If candidate is in the future (relative to email), the job was applied
+	// in the previous year (job applications are always in the past)
+	if (candidate.getTime() > emailDate.getTime()) {
+		candidate = new Date(`${monthStr} ${day}, ${emailYear - 1}`);
+	}
+
+	if (!isNaN(candidate.getTime())) {
+		return candidate.toISOString();
+	}
+
+	return new Date(Number(emailInternalDate)).toISOString();
+}
 
 /** Extract job posting URL from JobStreet email body. */
 function extractJobstreetUrl(body: string): string {
@@ -241,4 +310,84 @@ function extractJobstreetUrl(body: string): string {
 	);
 	if (match) return match[0];
 	return "";
+}
+
+/**
+ * Parse bulk activity summary email with multiple job entries.
+ *
+ * Body format:
+ *   {JobTitle}
+ *   {Company}
+ *   (blank)
+ *   {Status}     ("Reviewing applications" → VIEWED | "Job no longer advertised" → REJECTED)
+ *   (blank)
+ *   [{URL}]
+ *   (blank)
+ *   Applied on {date}    (date has spaces between every char e.g. "1 4 J u l" = "14 Jul")
+ *
+ * Each entry is followed by extra tracking URLs / "logo" before the next entry.
+ */
+function parseBulkActivity(email: {
+	from: string;
+	subject: string;
+	snippet: string;
+	body: string;
+	id: string;
+	internalDate: string;
+}): ReturnType<JobPlatformParser["parse"]> {
+	const results: ReturnType<JobPlatformParser["parse"]> = [];
+	// Normalize CRLF → LF (Gmail API uses \r\n)
+	const body = email.body.replace(/\r\n/g, "\n");
+
+	// Find entries: {Title}\n{Company}\n\n(?:[{URL}]\n\n)?{Status}\n\n(?:[{URL}])?
+	// Status before URL pattern: Title\nCompany\n\nReviewing\n\n[URL]
+	// Status after URL pattern:  Title\nCompany\n\n[URL]\n\nJob no longer\n\n[URL]
+	const entryRegex =
+		/^([A-Za-z0-9][^\n]{1,100})\n([A-Za-z0-9][^\n]{1,100})\n\n(?:\[([^\]]*)\]\n\n)?(Reviewing applications|Job no longer advertised)\n\n(?:\[([^\]]*)\])?/gim;
+
+	const reEntry = new RegExp(entryRegex.source, "gim");
+
+	let match: RegExpExecArray | null;
+	while ((match = reEntry.exec(body)) !== null) {
+		const jobTitle = match[1].trim();
+		const company = match[2].trim();
+		const urlBefore = match[3] ? match[3].trim() : "";
+		const statusText = match[4].trim();
+		const urlAfter = match[5] ? match[5].trim() : "";
+		const url = urlBefore || urlAfter;
+
+		let status: JobStatus;
+		if (/reviewing applications/i.test(statusText)) {
+			status = JobStatus.VIEWED;
+		} else {
+			status = JobStatus.REJECTED;
+		}
+
+		// Look for "Applied on {mangledDate}" after the matched block
+		const slice = body.slice(match.index + match[0].length);
+		const dateMatch = slice.match(/Applied on\s+([^\n]+)/i);
+		const rawDate = dateMatch ? dateMatch[1].trim() : "";
+		// De-space mangled dates like "1 4 J u l" → "14Jul"
+		const cleanDate = rawDate.replace(/\s+/g, "");
+
+		const finalDate = cleanDate
+			? parseMangledDate(cleanDate, email.internalDate)
+			: new Date(Number(email.internalDate)).toISOString();
+
+		results.push({
+			platform: JobPlatform.JOBSTREET,
+			jobTitle,
+			company,
+			status,
+			body: email.body,
+			snippet: email.snippet,
+			subject: email.subject,
+			from: email.from,
+			url,
+			date: finalDate,
+			emailId: email.id,
+		});
+	}
+
+	return results.length > 0 ? results : null;
 }

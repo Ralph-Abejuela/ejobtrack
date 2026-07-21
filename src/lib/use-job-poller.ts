@@ -43,67 +43,71 @@ async function processEmails(
 	const scannedIds: string[] = [];
 
 	for (const email of emails) {
+		console.log(email)
 		if (await isScanned(email.id)) continue;
 		scannedIds.push(email.id);
 
-		const result = parseEmail(email);
-		if (!result) continue;
-
-		const jobId = `${userEmail}:${result.platform}:${result.company
-			.toLowerCase()
-			.replace(/\s+/g, " ")}:${result.jobTitle
-			.toLowerCase()
-			.replace(/\s+/g, " ")}`;
+		const results = parseEmail(email);
+		if (!results) continue;
 
 		const existing = await getAllJobs(userEmail);
-		const dup = existing.find((j) => j.id === jobId);
 
-		if (dup) {
-			if (dup.emailId === email.id) continue;
+		for (const result of results) {
+			const jobId = `${userEmail}:${result.platform}:${result.company
+				.toLowerCase()
+				.replace(/\s+/g, " ")}:${result.jobTitle
+				.toLowerCase()
+				.replace(/\s+/g, " ")}`;
 
-			const newTs = Number(email.internalDate);
-			const oldTs = new Date(dup.date).getTime();
-			const isNewer = newTs > oldTs;
+			const dup = existing.find((j) => j.id === jobId);
 
-			// Always add to history
-			dup.history = [
-				...dup.history,
-				{
-					status: result.status,
-					date: new Date(newTs).toISOString(),
-					emailId: email.id,
-				},
-			];
+			if (dup) {
+				if (dup.emailId === email.id) continue;
 
-			if (isNewer) {
-				// Newer email — update status and fields
-				dup.status = result.status;
-				dup.date = new Date(newTs).toISOString();
-				dup.emailId = email.id;
-				dup.subject = email.subject;
-				dup.snippet = email.snippet;
-				if (email.body) dup.body = email.body;
-				if (result.url) dup.url = result.url;
-			}
+				const newTs = Number(email.internalDate);
+				const oldTs = new Date(dup.date).getTime();
+				const isNewer = newTs > oldTs;
 
-			dup.updatedAt = Date.now();
-			await storeJob(dup);
-		} else {
-			await storeJob({
-				...result,
-				id: jobId,
-				userEmail,
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-				history: [
+				// Always add to history
+				dup.history = [
+					...dup.history,
 					{
 						status: result.status,
-						date: new Date(Number(email.internalDate)).toISOString(),
+						date: new Date(newTs).toISOString(),
 						emailId: email.id,
 					},
-				],
-			});
-			newJobs++;
+				];
+
+				if (isNewer) {
+					// Newer email — update status and fields
+					dup.status = result.status;
+					dup.date = new Date(newTs).toISOString();
+					dup.emailId = email.id;
+					dup.subject = email.subject;
+					dup.snippet = email.snippet;
+					if (email.body) dup.body = email.body;
+					if (result.url) dup.url = result.url;
+				}
+
+				dup.updatedAt = Date.now();
+				await storeJob(dup);
+			} else {
+				await storeJob({
+					...result,
+					id: jobId,
+					userEmail,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+					history: [
+						{
+							status: result.status,
+							date: new Date(Number(email.internalDate)).toISOString(),
+							emailId: email.id,
+						},
+					],
+				});
+				newJobs++;
+			}
 		}
 	}
 

@@ -25,7 +25,8 @@ export interface JobApplication {
 	id: string;
 	/** The Google account that owns this data */
 	userEmail: string;
-	platform: JobPlatform;
+	/** Known platforms: JobPlatform enum values. Generic matches: sender email domain. */
+	platform: string;
 	jobTitle: string;
 	company: string;
 	status: JobStatus;
@@ -54,12 +55,18 @@ export interface JobApplication {
 
 export interface JobPlatformParser {
 	/** Unique platform key */
-	platform: JobPlatform;
+	platform: string;
 	/** Email addresses this parser handles */
 	fromAddresses: string[];
 	/**
-	 * Parse a full email body + snippet into a JobApplication.
+	 * Subject/snippet patterns that indicate non-job emails to skip entirely.
+	 * If any match, the email is ignored (no fallback to generic parser).
+	 */
+	ignorePatterns?: RegExp[];
+	/**
+	 * Parse a full email body + snippet into one or more JobApplication records.
 	 * Return null if this email isn't a job application update.
+	 * Return an array for bulk emails (e.g. weekly activity summaries with multiple jobs).
 	 */
 	parse(email: {
 		from: string;
@@ -68,8 +75,10 @@ export interface JobPlatformParser {
 		body: string;
 		id: string;
 		internalDate: string;
-	}): Omit<
-		JobApplication,
-		"id" | "userEmail" | "createdAt" | "updatedAt" | "history"
-	> | null;
+	}):
+		| Omit<
+				JobApplication,
+				"id" | "userEmail" | "createdAt" | "updatedAt" | "history"
+		  >[]
+		| null;
 }
