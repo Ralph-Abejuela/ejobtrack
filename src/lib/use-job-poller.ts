@@ -9,6 +9,7 @@ import {
 	addToDuplicateIndex,
 } from "@/lib/jobs-db";
 import { markScanned, isScanned } from "@/lib/jobs-cache";
+import { classifyEmail } from "@/lib/classify-email";
 import type { JobApplication } from "@/lib/jobs/types";
 import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
 
@@ -52,6 +53,13 @@ async function processEmails(
 		console.log(email);
 		if (await isScanned(email.id)) continue;
 		scannedIds.push(email.id);
+
+		// Semantic check — blocks newsletters and non-job emails
+		const isJob = await classifyEmail(email.subject, email.body);
+		if (isJob === false) {
+			await markScanned(userEmail, [email.id]);
+			continue;
+		}
 
 		const results = parseEmail(email);
 		if (!results) continue;
