@@ -12,7 +12,7 @@ import { genericParser, extractEmail } from "./generic";
 const IGNORE_SENDERS = [
 	"LinkedIn <jobs-listings@linkedin.com>",
 	"Jobstreet Reminders <noreply@e.jobstreet.com>",
-	"linkedin@em.linkedin.com",
+	".*<linkedin@em.linkedin.com>",
 	"LinkedIn <updates-noreply@linkedin.com>",
 	"Jobstreet Onboarding <noreply@e.jobstreet.com>",
 	"LiNa Recommendations <noreply@e.jobstreet.com>",

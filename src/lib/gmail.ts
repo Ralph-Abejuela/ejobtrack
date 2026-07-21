@@ -1,3 +1,5 @@
+import { htmlToText } from "html-to-text";
+
 // ── Gmail API client ───────────────────────────────────────────────────────
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -77,7 +79,10 @@ function decodeBase64(data: string): string {
 		const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
 		const padding = normalized.length % 4;
 		const padded = padding ? normalized + "=".repeat(4 - padding) : normalized;
-		return atob(padded);
+		// atob decodes to Latin-1, breaking UTF-8 chars.  Use Uint8Array + TextDecoder for proper UTF-8.
+		const binary = atob(padded);
+		const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+		return new TextDecoder().decode(bytes);
 	} catch {
 		return "";
 	}
@@ -112,27 +117,14 @@ function extractBody(part: GmailMessagePart): {
 	}
 
 	if (textHtml) {
-		return { body: stripHtml(textHtml), bodyHtml: textHtml, type: "text/html" };
+		return {
+			body: htmlToText(textHtml, { wordwrap: false }),
+			bodyHtml: textHtml,
+			type: "text/html",
+		};
 	}
 
 	return { body: "", bodyHtml: "", type: "unknown" };
-}
-
-function stripHtml(html: string): string {
-	return html
-		.replace(/<br\s*\/?>/gi, "\n")
-		.replace(/<\/p>/gi, "\n")
-		.replace(/<\/div>/gi, "\n")
-		.replace(/<\/tr>/gi, "\n")
-		.replace(/<[^>]*>/g, "")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&amp;/g, "&")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
 }
 
 export function parseMessage(msg: GmailMessage): ParsedEmail {

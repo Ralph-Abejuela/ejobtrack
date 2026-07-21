@@ -26,13 +26,12 @@ export default function GmailAuthModal() {
 	if (!show) return null;
 
 	return (
-		<AlertDialog open={show} onOpenChange={() => {}}>
+		<AlertDialog open={show} onOpenChange={() => { }}>
 			<AlertDialogContent size="default" className="max-w-sm sm:max-w-md">
-				<AlertDialogMedia>
-					<ShieldAlert className="size-8 text-amber-500" />
-				</AlertDialogMedia>
-
 				<AlertDialogHeader>
+					<AlertDialogMedia>
+						<ShieldAlert className="size-8 text-amber-500" />
+					</AlertDialogMedia>
 					<AlertDialogTitle>Gmail Access Required</AlertDialogTitle>
 					<AlertDialogDescription>
 						ejobtrack needs read-only access to your Gmail inbox to scan for job
