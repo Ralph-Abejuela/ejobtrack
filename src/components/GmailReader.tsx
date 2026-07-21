@@ -1,5 +1,7 @@
 import { useState, useCallback } from "react";
 import { useAuth } from "@/lib/auth";
+import { fetchMessageBody } from "@/lib/gmail";
+import { updateEmailBody } from "@/lib/email-cache";
 import { useEmailPoller } from "@/lib/use-email-poller";
 import {
 	Mail,
@@ -19,34 +21,61 @@ export default function GmailReader() {
 		cachedTotal,
 		loadMore,
 		allLoaded,
+		loadingMore,
 		poll,
 		refresh,
 		clearMyCache,
 	} = useEmailPoller();
 
 	const [expandedId, setExpandedId] = useState<string | null>(null);
+	const [loadingBodyId, setLoadingBodyId] = useState<string | null>(null);
+	// Track bodies fetched this session so we don't re-fetch
+	const [bodies, setBodies] = useState<Record<string, string>>({});
 
-	// --- Grant Gmail scope on first access ---
 	const handleGrantAccess = useCallback(async () => {
 		const token = await requestGmailScope();
 		if (!token) return;
-		await refresh();
+		// Pass token directly to bypass stale closure of accessToken
+		await refresh(token);
 	}, [requestGmailScope, refresh]);
 
-	// --- Toggle body expand ---
-	const toggleExpand = useCallback((id: string) => {
-		setExpandedId((prev) => (prev === id ? null : id));
-	}, []);
+	// --- Toggle body expand + lazy fetch body ---
+	const handleToggleExpand = useCallback(
+		async (emailId: string, currentBody: string) => {
+			// If closing, just close
+			if (expandedId === emailId) {
+				setExpandedId(null);
+				return;
+			}
 
-	// --- Clear cache for current user only ---
+			setExpandedId(emailId);
+
+			// If body already loaded (in bodies cache or has content), skip fetch
+			if (bodies[emailId] || currentBody) return;
+
+			if (!accessToken) return;
+
+			setLoadingBodyId(emailId);
+			try {
+				const { body, bodyType } = await fetchMessageBody(accessToken, emailId);
+				setBodies((prev) => ({ ...prev, [emailId]: body }));
+				// Persist in IndexedDB for next session
+				updateEmailBody(emailId, body, bodyType);
+			} catch (err) {
+				console.error("Failed to load body", err);
+			} finally {
+				setLoadingBodyId(null);
+			}
+		},
+		[accessToken, expandedId, bodies],
+	);
+
 	const handleClearCache = useCallback(async () => {
 		await clearMyCache();
 	}, [clearMyCache]);
 
-	// === Not authed ===
 	if (!user) return null;
 
-	// === Authed but no Gmail scope yet ===
 	if (!accessToken) {
 		return (
 			<div className="mt-8 space-y-4">
@@ -68,23 +97,19 @@ export default function GmailReader() {
 		);
 	}
 
-	// ── Derived state ────────────────────────────────────────────────────────
 	const hasCachedData = cachedTotal > 0;
 	const lastSyncStr = poll.lastSyncTime
 		? formatTimeAgo(poll.lastSyncTime)
 		: null;
 
-	// === Scope granted, show reader ===
 	return (
 		<div className="mt-8 space-y-4">
-			{/* Header */}
 			<div className="flex items-center justify-between">
 				<h2 className="text-lg font-semibold flex items-center gap-2">
 					<Mail className="size-5" /> Gmail Inbox
 				</h2>
 
 				<div className="flex items-center gap-3">
-					{/* Sync status */}
 					{poll.syncing && (
 						<span className="flex items-center gap-1 text-xs text-muted-foreground">
 							<Loader2 className="size-3 animate-spin" /> Syncing…
@@ -96,9 +121,8 @@ export default function GmailReader() {
 						</span>
 					)}
 
-					{/* Refresh button */}
 					<button
-						onClick={refresh}
+						onClick={() => refresh()}
 						disabled={poll.syncing}
 						className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
 						title="Sync now"
@@ -109,7 +133,6 @@ export default function GmailReader() {
 						Sync
 					</button>
 
-					{/* Clear cache */}
 					{hasCachedData && (
 						<button
 							onClick={handleClearCache}
@@ -123,7 +146,6 @@ export default function GmailReader() {
 				</div>
 			</div>
 
-			{/* Sync error */}
 			{poll.syncError && (
 				<div className="flex items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
 					<AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -131,21 +153,19 @@ export default function GmailReader() {
 				</div>
 			)}
 
-			{/* New emails badge */}
 			{poll.newCount > 0 && (
 				<div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
 					{poll.newCount} new email{poll.newCount !== 1 ? "s" : ""} synced
 				</div>
 			)}
 
-			{/* Initial empty state */}
 			{!hasCachedData && !poll.syncing && (
 				<div className="space-y-3">
 					<p className="text-sm text-muted-foreground">
 						No emails cached yet. Sync to load your inbox.
 					</p>
 					<button
-						onClick={refresh}
+						onClick={() => refresh()}
 						className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
 					>
 						<RefreshCw className="size-4" />
@@ -154,7 +174,6 @@ export default function GmailReader() {
 				</div>
 			)}
 
-			{/* Cache summary */}
 			{hasCachedData && (
 				<p className="text-xs text-muted-foreground">
 					{cachedTotal} email{cachedTotal !== 1 ? "s" : ""} cached
@@ -164,15 +183,17 @@ export default function GmailReader() {
 				</p>
 			)}
 
-			{/* Email list */}
 			{cachedEmails.length > 0 && (
 				<ul className="divide-y divide-border rounded-lg border">
 					{cachedEmails.map((email) => {
 						const isExpanded = expandedId === email.id;
+						const isBodyLoading = loadingBodyId === email.id;
+						const displayBody = bodies[email.id] || email.body;
+
 						return (
 							<li key={email.id}>
 								<button
-									onClick={() => toggleExpand(email.id)}
+									onClick={() => handleToggleExpand(email.id, email.body)}
 									className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50"
 								>
 									<span className="mt-0.5 shrink-0">
@@ -209,7 +230,6 @@ export default function GmailReader() {
 									</span>
 								</button>
 
-								{/* Expanded body */}
 								{isExpanded && (
 									<div className="border-t border-border px-4 pb-3 pt-2">
 										<div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -223,9 +243,16 @@ export default function GmailReader() {
 												<strong>Labels:</strong> {email.labelIds.join(", ")}
 											</span>
 										</div>
-										<pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-muted p-3 font-sans text-sm leading-relaxed">
-											{email.body || "(no plain-text body)"}
-										</pre>
+										{isBodyLoading ? (
+											<div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+												<Loader2 className="size-4 animate-spin" />
+												Loading body…
+											</div>
+										) : (
+											<pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-muted p-3 font-sans text-sm leading-relaxed">
+												{displayBody || "(no plain-text body)"}
+											</pre>
+										)}
 									</div>
 								)}
 							</li>
@@ -234,22 +261,28 @@ export default function GmailReader() {
 				</ul>
 			)}
 
-			{/* Load more (from cache) */}
 			{!allLoaded && (
 				<div className="flex justify-center">
 					<button
 						onClick={loadMore}
-						className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+						disabled={loadingMore}
+						className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
 					>
-						Load More ({cachedTotal - cachedEmails.length} remaining)
+						{loadingMore && <Loader2 className="size-4 animate-spin" />}
+						{loadingMore
+							? "Loading…"
+							: (() => {
+									const remaining = cachedTotal - cachedEmails.length;
+									return remaining > 0
+										? `Load More (${remaining} remaining)`
+										: "Load More";
+								})()}
 					</button>
 				</div>
 			)}
 		</div>
 	);
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 function formatDate(dateStr: string): string {
 	if (!dateStr) return "";

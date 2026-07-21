@@ -1,5 +1,4 @@
 // ── Gmail API client ───────────────────────────────────────────────────────
-// Uses OAuth access token from AuthContext for authenticated REST calls.
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -64,7 +63,6 @@ function getHeader(headers: GmailMessageHeader[], name: string): string {
 
 function decodeBase64(data: string): string {
 	try {
-		// Gmail uses URL-safe base64
 		const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
 		const padding = normalized.length % 4;
 		const padded = padding ? normalized + "=".repeat(4 - padding) : normalized;
@@ -74,12 +72,10 @@ function decodeBase64(data: string): string {
 	}
 }
 
-/** Recursively extract text/plain body from message parts. */
 function extractBody(part: GmailMessagePart): {
 	body: string;
 	type: "text/plain" | "text/html" | "unknown";
 } {
-	// Direct body
 	if (
 		part.body?.data &&
 		(part.mimeType === "text/plain" || part.mimeType === "text/html")
@@ -89,25 +85,19 @@ function extractBody(part: GmailMessagePart): {
 			type: part.mimeType === "text/plain" ? "text/plain" : "text/html",
 		};
 	}
-
-	// Multipart: search parts recursively
 	if (part.parts) {
-		// Prefer text/plain
 		for (const p of part.parts) {
 			const result = extractBody(p);
 			if (result.body && result.type === "text/plain") return result;
 		}
-		// Fallback to text/html
 		for (const p of part.parts) {
 			const result = extractBody(p);
 			if (result.body) return result;
 		}
 	}
-
 	return { body: "", type: "unknown" };
 }
 
-/** Strip HTML tags for a clean plain-text view (basic). */
 function stripHtml(html: string): string {
 	return html
 		.replace(/<br\s*\/?>/gi, "\n")
@@ -125,7 +115,6 @@ function stripHtml(html: string): string {
 		.trim();
 }
 
-/** Parse a full Gmail message into a usable email object. */
 export function parseMessage(msg: GmailMessage): ParsedEmail {
 	const headers = msg.payload.headers;
 	const { body, type } = extractBody(msg.payload);
@@ -146,6 +135,24 @@ export function parseMessage(msg: GmailMessage): ParsedEmail {
 	};
 }
 
+/** Parse a minimal message into ParsedEmail with empty body. */
+export function parseMessageMeta(msg: GmailMessage): ParsedEmail {
+	const headers = msg.payload.headers;
+	return {
+		id: msg.id,
+		threadId: msg.threadId,
+		subject: getHeader(headers, "Subject"),
+		from: getHeader(headers, "From"),
+		to: getHeader(headers, "To"),
+		date: getHeader(headers, "Date"),
+		snippet: msg.snippet,
+		body: "",
+		bodyType: "unknown",
+		labelIds: msg.labelIds,
+		internalDate: msg.internalDate,
+	};
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 function authHeaders(accessToken: string): Record<string, string> {
@@ -155,12 +162,7 @@ function authHeaders(accessToken: string): Record<string, string> {
 	};
 }
 
-/**
- * List messages with pagination.
- * @param accessToken - OAuth access token
- * @param opts - Optional filters and pagination
- * @returns Messages list with nextPageToken
- */
+/** List message IDs with pagination. */
 export async function listMessages(
 	accessToken: string,
 	opts: {
@@ -194,16 +196,18 @@ export async function listMessages(
 	};
 }
 
-/**
- * Get full message details including body.
- * format=full returns the complete RFC 2822 message.
- */
+/** Get a single message (any format). */
 export async function getMessage(
 	accessToken: string,
 	messageId: string,
 	format: "full" | "metadata" | "minimal" | "raw" = "full",
+	metadataHeaders?: string[],
 ): Promise<GmailMessage> {
-	const url = `${BASE_URL}/messages/${messageId}?format=${format}`;
+	const params = new URLSearchParams({ format });
+	if (metadataHeaders?.length) {
+		metadataHeaders.forEach((h) => params.append("metadataHeaders", h));
+	}
+	const url = `${BASE_URL}/messages/${messageId}?${params.toString()}`;
 	const res = await fetch(url, { headers: authHeaders(accessToken) });
 
 	if (!res.ok) {
@@ -215,39 +219,33 @@ export async function getMessage(
 }
 
 /**
- * Batch-fetch full message details for a list of message IDs.
- * Runs up to `concurrency` requests in parallel.
+ * Fetch messages with metadata only (no body).
+ * Uses format=metadata which returns headers + snippet.
  */
-export async function getMessages(
+export async function fetchMessagesMeta(
 	accessToken: string,
 	messageIds: string[],
 	concurrency = 6,
 ): Promise<ParsedEmail[]> {
 	const results: ParsedEmail[] = [];
-
-	// Process in chunks for controlled concurrency
+	const headerFilter = ["Subject", "From", "To", "Date"];
 	for (let i = 0; i < messageIds.length; i += concurrency) {
 		const chunk = messageIds.slice(i, i + concurrency);
 		const promises = chunk.map((id) =>
-			getMessage(accessToken, id)
-				.then(parseMessage)
-				.catch((err) => {
-					console.error(`Failed to fetch message ${id}:`, err);
-					return null as ParsedEmail | null;
-				}),
+			getMessage(accessToken, id, "metadata", headerFilter)
+				.then(parseMessageMeta)
+				.catch(() => null),
 		);
 		const chunkResults = await Promise.all(promises);
 		results.push(...chunkResults.filter((r): r is ParsedEmail => r !== null));
 	}
-
 	return results;
 }
 
 /**
- * One-shot: list + fetch all messages for a given page.
- * @returns Parsed emails plus nextPageToken for pagination.
+ * List + fetch metadata for a page of messages (no body).
  */
-export async function fetchEmailsPage(
+export async function fetchEmailsPageMeta(
 	accessToken: string,
 	opts: {
 		maxResults?: number;
@@ -258,6 +256,21 @@ export async function fetchEmailsPage(
 ): Promise<{ emails: ParsedEmail[]; nextPageToken: string | null }> {
 	const listRes = await listMessages(accessToken, opts);
 	const ids = listRes.messages.map((m) => m.id);
-	const emails = ids.length > 0 ? await getMessages(accessToken, ids) : [];
+	const emails =
+		ids.length > 0 ? await fetchMessagesMeta(accessToken, ids) : [];
 	return { emails, nextPageToken: listRes.nextPageToken };
+}
+
+/**
+ * Fetch the full body for a single message.
+ * Returns just the parsed body string.
+ */
+export async function fetchMessageBody(
+	accessToken: string,
+	messageId: string,
+): Promise<{ body: string; bodyType: "text/plain" | "text/html" | "unknown" }> {
+	const msg = await getMessage(accessToken, messageId, "full");
+	const { body, type } = extractBody(msg.payload);
+	const cleanBody = type === "text/html" ? stripHtml(body) : body;
+	return { body: cleanBody, bodyType: type };
 }

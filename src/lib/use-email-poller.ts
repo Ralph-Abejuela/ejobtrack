@@ -1,44 +1,45 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { fetchEmailsPage } from "@/lib/gmail";
+import { fetchEmailsPageMeta } from "@/lib/gmail";
 import {
 	storeEmails,
 	getLastSyncTime,
 	setLastSyncTime,
 	shouldRefresh,
 	getCachedEmails,
+	loadNextBatch,
+	countCached,
 	clearUserCache,
 	type EmailRecord,
 } from "@/lib/email-cache";
 
-const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const POLL_INTERVAL_MS = 60 * 60 * 1000;
 const PAGE_SIZE = 50;
 
+/** Convert epoch ms to Gmail search date format (YYYY/MM/DD). */
+function tsToGmailDate(ms: number): string {
+	const d = new Date(ms);
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, "0");
+	const day = String(d.getDate()).padStart(2, "0");
+	return `${y}/${m}/${day}`;
+}
+
 interface PollState {
-	/** True while a fetch is in progress */
 	syncing: boolean;
-	/** When the last successful sync completed */
 	lastSyncTime: number;
-	/** New emails discovered since last poll */
 	newCount: number;
-	/** Error from last sync attempt */
 	syncError: string | null;
 }
 
-/**
- * Hook that:
- * 1. Loads cached emails from IndexedDB on mount (scoped to current user)
- * 2. Polls Gmail API every hour (respects Page Visibility)
- * 3. Fetches only new emails since last sync using `after:` query
- * 4. Merges into IndexedDB cache under the current user's email
- * 5. Evicts oldest emails when >10k per user
- */
 export function useEmailPoller() {
 	const { user, accessToken } = useAuth();
 	const userEmail = user?.email ?? "";
 
 	const [cachedEmails, setCachedEmails] = useState<EmailRecord[]>([]);
 	const [cachedTotal, setCachedTotal] = useState(0);
+	const [hasMore, setHasMore] = useState(true);
+	const [loadingMore, setLoadingMore] = useState(false);
 	const [poll, setPoll] = useState<PollState>({
 		syncing: false,
 		lastSyncTime: getLastSyncTime(userEmail),
@@ -47,62 +48,73 @@ export function useEmailPoller() {
 	});
 
 	const pollingRef = useRef(false);
+	const oldestTsRef = useRef<number | null>(null);
 
-	// --- Load cached emails from IndexedDB (scoped to user) ---
+	// --- Load first page from cache ---
 	const loadCache = useCallback(async () => {
 		if (!userEmail) return;
 		const { emails, total } = await getCachedEmails(userEmail, 1, PAGE_SIZE);
 		setCachedEmails(emails);
 		setCachedTotal(total);
+		if (emails.length > 0) {
+			oldestTsRef.current = Number(emails[emails.length - 1].internalDate);
+		}
 	}, [userEmail]);
 
-	// Load cache on mount
 	useEffect(() => {
 		// eslint-disable-next-line react-hooks/set-state-in-effect
 		loadCache();
 	}, [loadCache]);
 
-	// --- Fetch new emails from Gmail API (scoped to user) ---
-	const sync = useCallback(async () => {
-		if (!accessToken || !userEmail || pollingRef.current) return;
+	// --- Sync: fetch NEW email metadata since last sync ---
+	const sync = useCallback(
+		async (tokenOverride?: string) => {
+			const token = tokenOverride ?? accessToken;
+			if (!token || !userEmail || pollingRef.current) return;
 
-		pollingRef.current = true;
-		setPoll((p) => ({ ...p, syncing: true, syncError: null }));
+			pollingRef.current = true;
+			setPoll((p) => ({ ...p, syncing: true, syncError: null }));
 
-		try {
-			const lastSync = getLastSyncTime(userEmail);
+			try {
+				const lastSync = getLastSyncTime(userEmail);
+				// Use epoch seconds for after: (docs: "pass the value in seconds instead")
+				const since = Math.floor((Date.now() - 2 * 60 * 60 * 1000) / 1000);
+				const q = lastSync > 0 ? `after:${since}` : undefined;
 
-			// Query for messages newer than last sync
-			const q =
-				lastSync > 0 ? `after:${Math.floor(lastSync / 1000)}` : undefined;
+				const { emails: newEmails, nextPageToken } = await fetchEmailsPageMeta(
+					token,
+					{
+						maxResults: PAGE_SIZE,
+						q,
+					},
+				);
 
-			const { emails: newEmails } = await fetchEmailsPage(accessToken, {
-				maxResults: PAGE_SIZE,
-				q,
-			});
+				if (newEmails.length > 0) {
+					await storeEmails(userEmail, newEmails);
+					await loadCache();
+				}
 
-			if (newEmails.length > 0) {
-				await storeEmails(userEmail, newEmails);
-				await loadCache();
+				const now = Date.now();
+				setLastSyncTime(userEmail, now);
+				setPoll((p) => ({
+					...p,
+					syncing: false,
+					lastSyncTime: now,
+					newCount: newEmails.length,
+				}));
+
+				if (nextPageToken && !q) setHasMore(true);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : "Sync failed";
+				setPoll((p) => ({ ...p, syncing: false, syncError: msg }));
+			} finally {
+				pollingRef.current = false;
 			}
+		},
+		[accessToken, userEmail, loadCache],
+	);
 
-			const now = Date.now();
-			setLastSyncTime(userEmail, now);
-			setPoll((p) => ({
-				...p,
-				syncing: false,
-				lastSyncTime: now,
-				newCount: newEmails.length,
-			}));
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : "Sync failed";
-			setPoll((p) => ({ ...p, syncing: false, syncError: msg }));
-		} finally {
-			pollingRef.current = false;
-		}
-	}, [accessToken, userEmail, loadCache]);
-
-	// --- Initial background sync if stale (for this user) ---
+	// --- Initial stale sync ---
 	useEffect(() => {
 		if (!accessToken || !userEmail) return;
 		if (shouldRefresh(userEmail)) {
@@ -111,28 +123,25 @@ export function useEmailPoller() {
 		}
 	}, [accessToken, userEmail, sync]);
 
-	// --- Polling interval (only when tab visible) ---
+	// --- Hourly poll ---
 	useEffect(() => {
 		if (!accessToken || !userEmail) return;
 
 		const onInterval = () => {
-			if (document.visibilityState === "visible") {
-				sync();
-			}
+			if (document.visibilityState === "visible") sync();
 		};
 
 		const id = setInterval(onInterval, POLL_INTERVAL_MS);
 		return () => clearInterval(id);
 	}, [accessToken, userEmail, sync]);
 
-	// --- Refresh on tab focus if stale (for this user) ---
+	// --- Tab focus refresh ---
 	useEffect(() => {
 		if (!accessToken || !userEmail) return;
 
 		const onVisibility = () => {
-			if (document.visibilityState === "visible" && shouldRefresh(userEmail)) {
+			if (document.visibilityState === "visible" && shouldRefresh(userEmail))
 				sync();
-			}
 		};
 
 		document.addEventListener("visibilitychange", onVisibility);
@@ -140,48 +149,96 @@ export function useEmailPoller() {
 	}, [accessToken, userEmail, sync]);
 
 	// --- Manual refresh ---
-	const refresh = useCallback(async () => {
-		await sync();
-	}, [sync]);
+	const refresh = useCallback(
+		async (tokenOverride?: string) => {
+			await sync(tokenOverride);
+		},
+		[sync],
+	);
 
-	// --- Load more from cache (scoped to user) ---
+	// --- Load more: serve from cache; fetch EXACT count needed from API ---
 	const loadMore = useCallback(async () => {
-		if (!userEmail) return;
-		const nextPage = Math.floor(cachedEmails.length / PAGE_SIZE) + 1;
-		const { emails: more } = await getCachedEmails(
+		if (!userEmail || !accessToken || pollingRef.current) return;
+
+		// 1. Try cache first
+		const batch = await loadNextBatch(
 			userEmail,
-			nextPage,
+			cachedEmails.length,
 			PAGE_SIZE,
 		);
-		if (more.length > 0) {
-			setCachedEmails((prev) => [...prev, ...more]);
+
+		if (batch.length >= PAGE_SIZE) {
+			setCachedEmails((prev) => [...prev, ...batch]);
+			return;
 		}
-	}, [userEmail, cachedEmails.length]);
+
+		// 2. Cache has partial batch — figure out how many more API items needed
+		const needed = PAGE_SIZE - batch.length;
+		setLoadingMore(true);
+		pollingRef.current = true;
+		setPoll((p) => ({ ...p, syncing: true }));
+
+		try {
+			const ts = oldestTsRef.current;
+			const q = ts != null ? `before:${tsToGmailDate(ts)}` : undefined;
+
+			const { emails: apiEmails, nextPageToken } = await fetchEmailsPageMeta(
+				accessToken,
+				{
+					maxResults: needed,
+					q,
+				},
+			);
+
+			if (apiEmails.length > 0) {
+				await storeEmails(userEmail, apiEmails);
+
+				// Now load the full batch from cache (includes cached partial + new)
+				const fullBatch = await loadNextBatch(
+					userEmail,
+					cachedEmails.length,
+					PAGE_SIZE,
+				);
+				setCachedEmails((prev) => [...prev, ...fullBatch]);
+				const freshTotal = await countCached(userEmail);
+				setCachedTotal(freshTotal);
+
+				if (fullBatch.length > 0) {
+					oldestTsRef.current = Number(
+						fullBatch[fullBatch.length - 1].internalDate,
+					);
+				}
+			}
+
+			if (!nextPageToken) setHasMore(false);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : "Load failed";
+			setPoll((p) => ({ ...p, syncError: msg }));
+		} finally {
+			setLoadingMore(false);
+			pollingRef.current = false;
+			setPoll((p) => ({ ...p, syncing: false }));
+		}
+	}, [accessToken, userEmail, cachedEmails.length]);
 
 	// --- Clear only this user's cache ---
 	const clearMyCache = useCallback(async () => {
 		if (!userEmail) return;
 		await clearUserCache(userEmail);
+		setHasMore(true);
+		oldestTsRef.current = null;
 		await loadCache();
 	}, [userEmail, loadCache]);
 
-	// --- Return both cached data and poller controls ---
 	return {
-		/** Emails loaded from cache (call loadMore to append next page) */
 		cachedEmails,
-		/** Total cached emails for this user */
 		cachedTotal,
-		/** Load next page of cached emails into cachedEmails */
 		loadMore,
-		/** True if all cached emails have been loaded */
-		allLoaded: cachedEmails.length >= cachedTotal,
-		/** Poller state */
+		allLoaded: !hasMore || cachedEmails.length === 0,
+		loadingMore,
 		poll,
-		/** Manual refresh */
 		refresh,
-		/** Clear only this user's cache */
 		clearMyCache,
-		/** Reload cache from IndexedDB */
 		reloadCache: loadCache,
 	};
 }

@@ -62,7 +62,7 @@ export async function storeEmails(
 	});
 }
 
-/** Get cached emails for a specific user, paginated by internalDate (newest first). */
+/** Get first page of cached emails (newest first). Used for initial load. */
 export async function getCachedEmails(
 	userEmail: string,
 	page: number,
@@ -72,12 +72,35 @@ export async function getCachedEmails(
 	const emails = await db.emails
 		.where("[userEmail+internalDate]")
 		.between([userEmail, ""], [userEmail, "\uffff"])
-		.reverse() // newest first
+		.reverse()
 		.offset((page - 1) * pageSize)
 		.limit(pageSize)
 		.toArray();
 
 	return { emails, total };
+}
+
+/**
+ * Load next batch from cache using raw offset (how many already loaded).
+ * Returns partial batch (< limit) when cache doesn't have that many.
+ */
+export async function loadNextBatch(
+	userEmail: string,
+	alreadyLoaded: number,
+	limit: number,
+): Promise<EmailRecord[]> {
+	return await db.emails
+		.where("[userEmail+internalDate]")
+		.between([userEmail, ""], [userEmail, "\uffff"])
+		.reverse()
+		.offset(alreadyLoaded)
+		.limit(limit)
+		.toArray();
+}
+
+/** Get total cached email count for user. */
+export async function countCached(userEmail: string): Promise<number> {
+	return db.emails.where({ userEmail }).count();
 }
 
 /** Check if a specific email id exists in cache for the given user. */
@@ -87,6 +110,15 @@ export async function hasCachedEmail(
 ): Promise<boolean> {
 	const record = await db.emails.get(id);
 	return !!record && record.userEmail === userEmail;
+}
+
+/** Update just the body fields on a cached email (lazy load). */
+export async function updateEmailBody(
+	id: string,
+	body: string,
+	bodyType: "text/plain" | "text/html" | "unknown",
+): Promise<void> {
+	await db.emails.update(id, { body, bodyType });
 }
 
 /** Clear cached emails for a specific user. */
