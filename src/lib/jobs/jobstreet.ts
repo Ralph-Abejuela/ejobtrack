@@ -351,16 +351,21 @@ function parseBulkActivity(email: {
 	while ((match = reEntry.exec(body)) !== null) {
 		const jobTitle = match[1].trim();
 		const company = match[2].trim();
-		const urlBefore = match[3] ? match[3].trim() : "";
 		const statusText = match[4].trim();
-		const urlAfter = match[5] ? match[5].trim() : "";
-		const url = urlBefore || urlAfter;
 
 		let status: JobStatus;
+		let url: string;
 		if (/reviewing applications/i.test(statusText)) {
 			status = JobStatus.VIEWED;
+			// For "Reviewing applications": the URL right after status is an icon/tracking URL.
+			// The real job posting URL is after the "Applied on" line.
+			const slice = body.slice(match.index + match[0].length);
+			const jobUrlMatch = slice.match(/Applied on[^\n]*\n\n\[([^\]]*)\]/i);
+			url = jobUrlMatch ? jobUrlMatch[1].trim() : "";
 		} else {
 			status = JobStatus.REJECTED;
+			// "Job no longer advertised": URL after status IS the job link.
+			url = (match[5] ?? "").trim();
 		}
 
 		// Look for "Applied on {mangledDate}" after the matched block
