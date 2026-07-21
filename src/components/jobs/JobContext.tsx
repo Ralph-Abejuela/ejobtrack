@@ -10,7 +10,8 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useJobPoller } from "@/lib/use-job-poller";
 import {
-	findPotentialDuplicates,
+	getDuplicateGroups,
+	ensureDuplicateIndex,
 	mergeJobs,
 	mergeIntoNew,
 	undoMerge,
@@ -112,7 +113,11 @@ export function JobProvider({ children }: { children: ReactNode }) {
 			setDuplicates([]);
 			return;
 		}
-		findPotentialDuplicates(user.email).then(setDuplicates);
+		(async () => {
+			await ensureDuplicateIndex(user.email);
+			const result = await getDuplicateGroups();
+			setDuplicates(result);
+		})();
 	}, [user?.email, jobs]);
 
 	const visibleDuplicates = useMemo(

@@ -1,13 +1,24 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { JobApplication, JobStatus } from "@/lib/jobs/types";
 
+interface DupIndexEntry {
+	title: string;
+	jobIds: string[];
+}
+
 const db = new Dexie("ejobtrack_jobs") as Dexie & {
 	jobs: EntityTable<JobApplication, "id">;
+	dupIndex: EntityTable<DupIndexEntry, "title">;
 };
 
 db.version(1).stores({
 	// id = `${userEmail}:${platform}:${normalisedCompany}:${normalisedJobTitle}`
 	jobs: "id, userEmail, platform, status, company, jobTitle, date, createdAt, updatedAt, [platform+status], [userEmail+status]",
+});
+
+db.version(2).stores({
+	jobs: "id, userEmail, platform, status, company, jobTitle, date, createdAt, updatedAt, [platform+status], [userEmail+status]",
+	dupIndex: "&title",
 });
 
 export { db };
@@ -175,31 +186,109 @@ export interface DuplicateGroup {
 	jobs: JobApplication[];
 }
 
-/** Find jobs with same platform + title but similar-but-different company names. */
-export async function findPotentialDuplicates(
-	userEmail: string,
-): Promise<DuplicateGroup[]> {
+// ── Duplicate index (incremental hash) ─────────────────────────────────────
+
+/** Normalize a job title for hash key. */
+function normalizeTitle(title: string): string {
+	return title.toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Build the entire dupIndex from scratch for a user. */
+export async function buildDuplicateIndex(userEmail: string): Promise<void> {
 	const jobs = await db.jobs.where({ userEmail }).toArray();
 
-	// Group by normalized job title
-	const groups = new Map<string, JobApplication[]>();
+	const groups = new Map<string, string[]>();
 	for (const j of jobs) {
-		const key = j.jobTitle.toLowerCase().replace(/\s+/g, " ");
+		const key = normalizeTitle(j.jobTitle);
 		const arr = groups.get(key) ?? [];
-		arr.push(j);
+		arr.push(j.id);
 		groups.set(key, arr);
 	}
 
-	const result: DuplicateGroup[] = [];
-	for (const [groupKey, group] of groups) {
-		if (group.length < 2) continue;
+	await db.dupIndex.clear();
+	for (const [title, jobIds] of groups) {
+		await db.dupIndex.put({ title, jobIds });
+	}
+}
 
-		// Sort by company name length (longest first) for canonical pick
-		group.sort((a, b) => b.company.length - a.company.length);
+/** Check if dupIndex has data — if not, build it. */
+export async function ensureDuplicateIndex(userEmail: string): Promise<void> {
+	const count = await db.dupIndex.count();
+	if (count === 0) {
+		await buildDuplicateIndex(userEmail);
+	}
+}
+
+/** Add (or update) a job's entry in the dupIndex. */
+export async function addToDuplicateIndex(job: {
+	id: string;
+	jobTitle: string;
+}): Promise<void> {
+	const title = normalizeTitle(job.jobTitle);
+	const existing = await db.dupIndex.get(title);
+	if (existing) {
+		if (!existing.jobIds.includes(job.id)) {
+			existing.jobIds.push(job.id);
+			await db.dupIndex.put(existing);
+		}
+	} else {
+		await db.dupIndex.put({ title, jobIds: [job.id] });
+	}
+}
+
+/** Remove a job id from the dupIndex, cleaning up empty entries. */
+export async function removeFromDuplicateIndex(
+	jobId: string,
+	jobTitle: string,
+): Promise<void> {
+	const title = normalizeTitle(jobTitle);
+	const existing = await db.dupIndex.get(title);
+	if (!existing) return;
+	existing.jobIds = existing.jobIds.filter((id) => id !== jobId);
+	if (existing.jobIds.length === 0) {
+		await db.dupIndex.delete(title);
+	} else {
+		await db.dupIndex.put(existing);
+	}
+}
+
+/** Move a job from one title group to another (e.g. after edit). */
+export async function moveInDuplicateIndex(
+	jobId: string,
+	oldTitle: string,
+	newTitle: string,
+): Promise<void> {
+	if (normalizeTitle(oldTitle) === normalizeTitle(newTitle)) return;
+	await removeFromDuplicateIndex(jobId, oldTitle);
+	await addToDuplicateIndex({ id: jobId, jobTitle: newTitle });
+}
+
+/**
+ * Get all duplicate groups using the incremental index.
+ * Only fetches full job data for groups with ≥2 entries.
+ */
+export async function getDuplicateGroups(): Promise<DuplicateGroup[]> {
+	const entries = await db.dupIndex.toArray();
+	const groups = entries.filter((e) => e.jobIds.length >= 2);
+
+	const allIds = groups.flatMap((g) => g.jobIds);
+	if (allIds.length === 0) return [];
+
+	const jobs = await db.jobs.where("id").anyOf(allIds).toArray();
+	const jobMap = new Map(jobs.map((j) => [j.id, j]));
+
+	const result: DuplicateGroup[] = [];
+	for (const group of groups) {
+		const groupJobs = group.jobIds
+			.map((id) => jobMap.get(id))
+			.filter((j): j is JobApplication => !!j);
+
+		if (groupJobs.length < 2) continue;
+		groupJobs.sort((a, b) => b.company.length - a.company.length);
 		result.push({
-			groupKey,
-			canonicalCompany: group[0].company,
-			jobs: group,
+			groupKey: group.title,
+			canonicalCompany: groupJobs[0].company,
+			jobs: groupJobs,
 		});
 	}
 
@@ -252,6 +341,10 @@ export async function mergeJobs(
 		});
 		await db.jobs.delete(removeId);
 	});
+
+	// Update duplicate index
+	await removeFromDuplicateIndex(removeId, remove.jobTitle);
+	await addToDuplicateIndex({ id: keepId, jobTitle: keep.jobTitle });
 
 	const entry: ResolutionEntry = {
 		groupKey,
@@ -328,6 +421,15 @@ export async function mergeIntoNew(
 		}
 	});
 
+	// Update duplicate index
+	for (const r of toRemove) {
+		await removeFromDuplicateIndex(r.id, r.jobTitle);
+	}
+	await addToDuplicateIndex({
+		id: keep.id,
+		jobTitle: newTitle ?? keep.jobTitle,
+	});
+
 	const groupKey = keep.jobTitle.toLowerCase().replace(/\s+/g, " ");
 	const entry: ResolutionEntry = {
 		groupKey,
@@ -363,6 +465,16 @@ export async function undoMerge(timestamp: number): Promise<boolean> {
 			await db.jobs.put(keepSnapshot);
 			// Restore removed record
 			await db.jobs.put(removeSnapshot);
+		});
+
+		// Rebuild duplicate index — safest after undo (titles/IDs may differ)
+		await addToDuplicateIndex({
+			id: keepSnapshot.id,
+			jobTitle: keepSnapshot.jobTitle,
+		});
+		await addToDuplicateIndex({
+			id: removeSnapshot.id,
+			jobTitle: removeSnapshot.jobTitle,
 		});
 
 		// Remove snapshots

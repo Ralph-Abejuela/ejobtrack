@@ -2,7 +2,12 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { listMessages, getMessage, parseMessage } from "@/lib/gmail";
 import { parseEmail } from "@/lib/jobs/registry";
-import { getAllJobs, getStatusCounts, storeJob } from "@/lib/jobs-db";
+import {
+	getAllJobs,
+	getStatusCounts,
+	storeJob,
+	addToDuplicateIndex,
+} from "@/lib/jobs-db";
 import { markScanned, isScanned } from "@/lib/jobs-cache";
 import type { JobApplication } from "@/lib/jobs/types";
 import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
@@ -117,8 +122,10 @@ async function processEmails(
 
 				dup.updatedAt = Date.now();
 				await storeJob(dup);
+				// Ensure duplicate index has this job
+				await addToDuplicateIndex({ id: dup.id, jobTitle: dup.jobTitle });
 			} else {
-				await storeJob({
+				const newJob = {
 					...result,
 					id: jobId,
 					userEmail,
@@ -131,7 +138,9 @@ async function processEmails(
 							emailId: email.id,
 						},
 					],
-				});
+				};
+				await storeJob(newJob);
+				await addToDuplicateIndex({ id: newJob.id, jobTitle: newJob.jobTitle });
 				newJobs++;
 			}
 		}
