@@ -65,7 +65,6 @@ export function parseEmail(email: {
 			(s) => s.toLowerCase().match(email.from.trim().toLowerCase()),
 		)
 	) {
-	  console.log(email.from.trim().toLowerCase(), "===", IGNORE_SENDERS)
 		return null;
 	}
 
