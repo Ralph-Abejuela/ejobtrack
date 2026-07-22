@@ -1,19 +1,23 @@
 // ── Job Application types ──────────────────────────────────────────────────
 
-export enum JobStatus {
-	APPLIED = "applied",
-	VIEWED = "viewed",
-	INTERVIEW = "interview",
-	OFFER = "offer",
-	REJECTED = "rejected",
-	UNKNOWN = "unknown",
-}
+export const JobStatus = {
+	APPLIED: "applied",
+	VIEWED: "viewed",
+	INTERVIEW: "interview",
+	OFFER: "offer",
+	REJECTED: "rejected",
+	UNKNOWN: "unknown",
+} as const;
 
-export enum JobPlatform {
-	JOBSTREET = "jobstreet",
-	LINKEDIN = "linkedin",
-	INDEED = "indeed",
-}
+export type JobStatus = (typeof JobStatus)[keyof typeof JobStatus];
+
+export const JobPlatform = {
+	JOBSTREET: "jobstreet",
+	LINKEDIN: "linkedin",
+	INDEED: "indeed",
+} as const;
+
+export type JobPlatform = (typeof JobPlatform)[keyof typeof JobPlatform];
 
 export interface JobStatusChange {
 	status: JobStatus;

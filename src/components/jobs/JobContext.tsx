@@ -12,7 +12,6 @@ import { useJobPoller } from "@/lib/use-job-poller";
 import {
 	getDuplicateGroups,
 	ensureDuplicateIndex,
-	mergeJobs,
 	mergeIntoNew,
 	undoMerge,
 	pruneStaleDismissals,
@@ -382,43 +381,6 @@ export function JobProvider({ children }: { children: ReactNode }) {
 			}
 		},
 		[selectedJobs, user?.email, reload],
-	);
-
-	const handleMerge = useCallback(
-		async (keepId: string, removeId: string) => {
-			if (!user?.email) return;
-			setMerging(`${keepId}:${removeId}`);
-			try {
-				const result = await mergeJobs(user.email, keepId, removeId);
-				await reload();
-				setResolutionHistory(getResolutionHistory());
-
-				if (result) {
-					const ts = getResolutionHistory()[0]?.timestamp;
-					toast("Merged duplicate", {
-						position: "bottom-right",
-						action: {
-							label: "Undo merge",
-							onClick: () => {
-								if (!ts) return;
-								setUndoing(true);
-								undoMerge(ts)
-									.then((ok) => {
-										if (ok) {
-											setResolutionHistory(getResolutionHistory());
-											reload();
-										}
-									})
-									.finally(() => setUndoing(false));
-							},
-						},
-					});
-				}
-			} finally {
-				setMerging(null);
-			}
-		},
-		[user?.email, reload],
 	);
 
 	const handleStatusUpdate = useCallback(

@@ -12,6 +12,7 @@ import { markScanned, isScanned, getScannedCount } from "@/lib/jobs-cache";
 import { classifyEmail } from "@/lib/classify-email";
 import type { JobApplication } from "@/lib/jobs/types";
 import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
+import { capture } from "./analytics";
 
 const PAGE_SIZE = 25;
 
@@ -54,6 +55,11 @@ async function processEmails(
 			}),
 		)
 	).filter((e): e is NonNullable<typeof e> => e !== null);
+
+	capture("emails_fetched", {
+		count: emails.length,
+		user: userEmail,
+	});
 
 	let newJobs = 0;
 	const scannedIds: string[] = [];
@@ -169,6 +175,11 @@ async function processEmails(
 	if (scannedIds.length > 0) {
 		await markScanned(userEmail, scannedIds);
 	}
+
+	capture("batch_processed", {
+		emails_processed: scannedIds.length,
+		new_jobs: newJobs,
+	});
 
 	return { newJobs };
 }

@@ -10,6 +10,7 @@ import {
 	useRef,
 } from "react";
 import { setOnUnauthorized } from "./gmail";
+import { capture, identifyUser } from "./analytics";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -122,6 +123,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 				loading: false,
 			}));
 			persist(response.credential, null);
+			identifyUser(user.email, user.name);
+			capture("user_signed_in", { email: user.email });
 
 			// Create token client for Gmail scope (lazy – user must click "read email" to trigger)
 			gmailTokenClientRef.current = google.accounts.oauth2.initTokenClient({
@@ -226,8 +229,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 							accessToken: tokenResponse.access_token,
 							requestingScope: false,
 						}));
-						if (state.idToken)
+						if (state.idToken) {
 							persist(state.idToken, tokenResponse.access_token);
+						}
+						if (state.user) {
+							capture("gmail_authorized", {
+								email: state.user.email,
+							});
+						}
 						resolve(tokenResponse.access_token);
 					} else {
 						setState((prev) => ({ ...prev, requestingScope: false }));

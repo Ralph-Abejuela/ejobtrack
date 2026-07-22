@@ -1,28 +1,48 @@
-import { StrictMode } from 'react'
-import ReactDOM from 'react-dom/client'
-import { RouterProvider, createRouter } from '@tanstack/react-router'
-import './index.css'
+import { StrictMode } from "react";
+import ReactDOM from "react-dom/client";
+import { RouterProvider, createRouter } from "@tanstack/react-router";
+import { PostHogProvider } from "posthog-js/react";
+import { posthog } from "posthog-js";
+import "./index.css";
 
 // Import the generated route tree
-import { routeTree } from './routeTree.gen'
+import { routeTree } from "./routeTree.gen";
+
+// ── PostHog analytics ────────────────────────────────────────────────────────
+const POSTHOG_KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
+if (POSTHOG_KEY) {
+	posthog.init(POSTHOG_KEY, {
+		api_host: "https://us.i.posthog.com",
+		capture_pageview: "history_change", // SPA route tracking
+		loaded: (ph) => {
+			if (import.meta.env.DEV) ph.opt_out_capturing(); // no dev noise
+		},
+	});
+}
 
 // Create a new router instance
-const router = createRouter({ routeTree, basepath: "/ejobtrack-frontend/" })
+const basepath =
+	import.meta.env.PROD && window.location.hostname.includes("github.io")
+		? "/ejobtrack-frontend/"
+		: "/";
+const router = createRouter({ routeTree, basepath });
 
 // Register the router instance for type safety
-declare module '@tanstack/react-router' {
-  interface Register {
-    router: typeof router
-  }
+declare module "@tanstack/react-router" {
+	interface Register {
+		router: typeof router;
+	}
 }
 
 // Render the app
-const rootElement = document.getElementById('root')!
+const rootElement = document.getElementById("root")!;
 if (!rootElement.innerHTML) {
-  const root = ReactDOM.createRoot(rootElement)
-  root.render(
-    <StrictMode>
-      <RouterProvider router={router} />
-    </StrictMode>,
-  )
+	const root = ReactDOM.createRoot(rootElement);
+	root.render(
+		<StrictMode>
+			<PostHogProvider client={posthog}>
+				<RouterProvider router={router} />
+			</PostHogProvider>
+		</StrictMode>,
+	);
 }

@@ -307,7 +307,7 @@ function scoreStatus(subject: string, body: string): JobStatus {
 		}
 	}
 
-	let bestStatus = JobStatus.APPLIED;
+	let bestStatus: JobStatus = JobStatus.APPLIED;
 	let bestScore = 0;
 
 	for (const [status, score] of Object.entries(total)) {

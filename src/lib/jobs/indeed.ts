@@ -130,7 +130,7 @@ function parseStatusUpdate(email: Parameters<JobPlatformParser["parse"]>[0]) {
 
 	// ── Detect status ──
 	const allText = `${subject} ${richText} ${snippet}`;
-	let status = JobStatus.APPLIED;
+	let status: JobStatus = JobStatus.APPLIED;
 
 	if (
 		/not selected|will not be moving forward|not moving forward|regret to inform|unsuccessful|application was not selected/i.test(

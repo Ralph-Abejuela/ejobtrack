@@ -1,5 +1,3 @@
-import { pipeline } from "@xenova/transformers";
-
 type ClassifyFn = (text: string) => Promise<{ label: string; score: number }[]>;
 
 let _classify: ClassifyFn | null = null;
@@ -13,6 +11,7 @@ async function load(): Promise<void> {
 	if (_classify || _loading) return;
 	_loading = true;
 	try {
+		const { pipeline } = await import("@xenova/transformers");
 		const pipe = await pipeline(
 			"text-classification",
 			"mattohan/job-tracker-email-classifier",

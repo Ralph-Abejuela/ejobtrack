@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { JobApplication, JobStatus } from "@/lib/jobs/types";
+import { JobStatus, type JobApplication } from "@/lib/jobs/types";
 
 interface DupIndexEntry {
 	title: string;
@@ -92,7 +92,7 @@ export async function deleteHistoryEntry(
 		job.status = last.status as JobStatus;
 		job.date = last.date;
 	} else if (job.history.length === 0) {
-		job.status = "unknown" as JobStatus;
+		job.status = JobStatus.UNKNOWN;
 		job.date = new Date(0).toISOString();
 	}
 

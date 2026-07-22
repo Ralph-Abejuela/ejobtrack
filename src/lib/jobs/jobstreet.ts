@@ -40,7 +40,7 @@ export const jobstreetParser: JobPlatformParser = {
 
 		let jobTitle = "";
 		let company = "";
-		let status = JobStatus.APPLIED;
+		let status: JobStatus = JobStatus.APPLIED;
 
 		const lowerSubject = subject.toLowerCase().replace(/\s+/g, " ");
 		const lowerSnippet = snippet.toLowerCase().replace(/\s+/g, " ");
