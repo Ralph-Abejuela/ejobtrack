@@ -13,12 +13,18 @@ export default function Header() {
 				<Link to="/" className="text-lg font-bold tracking-tight">
 					ejobtrack
 				</Link>
-				<Link
-					to="/privacy"
-					className="text-xs text-muted-foreground hover:text-foreground"
-				>
-					Privacy
-				</Link>
+					<Link
+						to="/"
+						className="text-sm text-muted-foreground hover:text-foreground"
+					>
+						Home
+					</Link>
+					<Link
+						to="/jobs"
+						className="text-sm text-muted-foreground hover:text-foreground"
+					>
+						Jobs
+					</Link>
 			</div>
 
 			<div className="flex items-center gap-3">

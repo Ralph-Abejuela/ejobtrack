@@ -37,5 +37,5 @@ export default function GoogleSignInButton() {
 		return () => clearTimeout(id);
 	}, [user, gsiReady]);
 
-	return <div ref={buttonRef} className="min-h-[40px]" />;
+	return <div ref={buttonRef} className="min-h-10" />;
 }

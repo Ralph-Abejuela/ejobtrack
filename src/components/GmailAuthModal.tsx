@@ -1,16 +1,8 @@
-import { useAuth } from "@/lib/auth";
-import {
-	AlertDialog,
-	AlertDialogContent,
-	AlertDialogHeader,
-	AlertDialogMedia,
-	AlertDialogTitle,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogAction,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import { Mail, Loader2, LogOut, ShieldAlert } from "lucide-react";
+import { useAuth } from '@/lib/auth';
+import { useNavigate } from '@tanstack/react-router';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction } from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
+import { Mail, Loader2, LogOut, ShieldAlert } from 'lucide-react';
 
 /**
  * Blocking modal that forces the user to grant Gmail read-only access.
@@ -18,55 +10,44 @@ import { Mail, Loader2, LogOut, ShieldAlert } from "lucide-react";
  * Non-dismissable — only "Authorize" or "Sign Out" buttons.
  */
 export default function GmailAuthModal() {
-	const { user, accessToken, requestingScope, requestGmailScope, signOut } =
-		useAuth();
+  const { user, accessToken, requestingScope, requestGmailScope, signOut } = useAuth();
+  const navigate = useNavigate();
 
-	const show = !!user && !accessToken;
+  const show = !!user && !accessToken;
 
-	if (!show) return null;
+  const redirectAfterGmailScope = async () => {
+    const result = await requestGmailScope();
+    if (result !== null) {
+      navigate({ to: '/jobs' });
+    }
+  };
 
-	return (
-		<AlertDialog open={show} onOpenChange={() => { }}>
-			<AlertDialogContent size="default" className="max-w-sm sm:max-w-md">
-				<AlertDialogHeader>
-					<AlertDialogMedia>
-						<ShieldAlert className="size-8 text-amber-500" />
-					</AlertDialogMedia>
-					<AlertDialogTitle className={"text-xl font-bold"}>Gmail Access Required</AlertDialogTitle>
-					<AlertDialogDescription className={"text-md"}>
-						ejobtrack needs read-only access to your Gmail inbox to scan for job
-						application updates from JobStreet and LinkedIn.
-					</AlertDialogDescription>
-				</AlertDialogHeader>
+  if (!show) return null;
 
-				<AlertDialogFooter>
-					<div className="flex w-full flex-col gap-2">
-						<AlertDialogAction
-							onClick={requestGmailScope}
-							disabled={requestingScope}
-							className="w-full gap-2 text-md"
-						>
-							{requestingScope ? (
-								<Loader2 className="size-4 animate-spin" />
-							) : (
-								<Mail className="size-4" />
-							)}
-							{requestingScope
-								? "Waiting for consent…"
-								: "Authorize Gmail Access"}
-						</AlertDialogAction>
-						<Button
-							variant="outline"
-							onClick={signOut}
-							disabled={requestingScope}
-							className="w-full gap-2 text-muted-foreground text-md"
-						>
-							<LogOut className="size-4" />
-							Sign Out
-						</Button>
-					</div>
-				</AlertDialogFooter>
-			</AlertDialogContent>
-		</AlertDialog>
-	);
+  return (
+    <AlertDialog open={show} onOpenChange={() => {}}>
+      <AlertDialogContent size='default' className='max-w-sm sm:max-w-md'>
+        <AlertDialogHeader>
+          <AlertDialogMedia>
+            <ShieldAlert className='size-8 text-amber-500' />
+          </AlertDialogMedia>
+          <AlertDialogTitle className={'text-xl font-bold'}>Gmail Access Required</AlertDialogTitle>
+          <AlertDialogDescription className={'text-md'}>ejobtrack needs read-only access to your Gmail inbox to scan for job application updates from JobStreet and LinkedIn.</AlertDialogDescription>
+        </AlertDialogHeader>
+
+        <AlertDialogFooter>
+          <div className='flex w-full flex-col gap-2'>
+            <AlertDialogAction onClick={redirectAfterGmailScope} disabled={requestingScope} className='w-full gap-2 text-md'>
+              {requestingScope ? <Loader2 className='size-4 animate-spin' /> : <Mail className='size-4' />}
+              {requestingScope ? 'Waiting for consent…' : 'Authorize Gmail Access'}
+            </AlertDialogAction>
+            <Button variant='outline' onClick={signOut} disabled={requestingScope} className='w-full gap-2 text-muted-foreground text-md'>
+              <LogOut className='size-4' />
+              Sign Out
+            </Button>
+          </div>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }
