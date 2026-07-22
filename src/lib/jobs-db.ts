@@ -209,6 +209,7 @@ function getResolutions(): ResolutionEntry[] {
 		const raw = localStorage.getItem(RESOLUTION_KEY);
 		return raw ? JSON.parse(raw) : [];
 	} catch {
+		console.warn("[jobs-db] Failed to read resolutions");
 		return [];
 	}
 }
@@ -264,6 +265,7 @@ function readDismissals(): DismissalMap {
 			? Object.fromEntries(parsed.map((k: string) => [k, -1]))
 			: parsed;
 	} catch {
+		console.warn("[jobs-db] Failed to read dismissed groups");
 		return {};
 	}
 }
@@ -486,7 +488,7 @@ export async function mergeJobs(
 			JSON.stringify({ keepSnapshot, removeSnapshot }),
 		);
 	} catch {
-		/* localStorage may be full — undo not available */
+		console.warn("[jobs-db] localStorage full, undo snapshots not saved");
 	}
 	saveResolution(entry);
 
@@ -580,7 +582,7 @@ export async function mergeIntoNew(
 			}),
 		);
 	} catch {
-		/* localStorage full — undo unavailable */
+		console.warn("[jobs-db] localStorage full, undo snapshots not saved");
 	}
 	saveResolution(entry);
 
@@ -645,7 +647,8 @@ export async function undoMerge(timestamp: number): Promise<boolean> {
 		localStorage.setItem(RESOLUTION_KEY, JSON.stringify(updated));
 
 		return true;
-	} catch {
+	} catch (err) {
+		console.warn("[jobs-db] Failed to undo merge:", err);
 		return false;
 	}
 }

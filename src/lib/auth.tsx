@@ -54,6 +54,7 @@ function decodeJwtPayload(token: string): GoogleUser | null {
 		const json = atob(base64);
 		return JSON.parse(json) as GoogleUser;
 	} catch {
+		console.warn("[auth] Failed to decode JWT token");
 		return null;
 	}
 }
@@ -83,7 +84,7 @@ function restoreSession(): AuthState {
 			}
 		}
 	} catch {
-		// corrupt session, ignore
+		console.warn("[auth] Corrupt session, ignoring");
 	}
 	return {
 		user: null,
