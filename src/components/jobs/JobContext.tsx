@@ -120,6 +120,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				? Object.fromEntries(parsed.map((k: string) => [k, -1]))
 				: parsed;
 		} catch {
+			console.warn("[JobContext] Failed to parse dismissed groups");
 			return {};
 		}
 	});

@@ -534,7 +534,7 @@ function getCrawlState(userEmail: string): CrawlState {
 		const raw = localStorage.getItem(`job_crawl_${userEmail}`);
 		if (raw) return JSON.parse(raw) as CrawlState;
 	} catch {
-		/* ignore */
+		console.warn("[poller] Failed to read crawl state");
 	}
 	return {
 		userEmail,
