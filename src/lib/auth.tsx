@@ -175,24 +175,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	// --- Sign out ---
 	const signOut = useCallback(() => {
 		sessionStorage.removeItem(SESSION_KEY);
-
-		// Revoke access token if present
-		if (state.accessToken) {
-			try {
-				google.accounts.oauth2.revoke(state.accessToken, () => {});
-			} catch {
-				/* ignore */
-			}
-		}
-
-		// Revoke ID token
-		if (state.idToken) {
-			try {
-				google.accounts.id.revoke(state.idToken, () => {});
-			} catch {
-				/* ignore */
-			}
-		}
+		setOnUnauthorized(null); // prevent retry loops
+		gmailTokenClientRef.current = null;
 
 		setState({
 			user: null,
@@ -202,13 +186,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			requestingScope: false,
 			gsiReady: true,
 		});
-		gmailTokenClientRef.current = null;
-	}, [state.accessToken, state.idToken]);
+	}, []);
 
-	// Wire 401 → signOut
+	// Wire 401 → try silent token refresh, fall back to signOut
+	const refreshAccessToken = useCallback(async (): Promise<string | null> => {
+		return new Promise((resolve) => {
+			const refreshClient = google.accounts.oauth2.initTokenClient({
+				client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+				scope: "https://www.googleapis.com/auth/gmail.readonly",
+				prompt: "", // silent — no popup if user already granted
+				callback: (tokenResponse) => {
+					if (tokenResponse?.access_token) {
+						setState((prev) => ({
+							...prev,
+							accessToken: tokenResponse.access_token,
+						}));
+						if (state.idToken)
+							persist(state.idToken, tokenResponse.access_token);
+						resolve(tokenResponse.access_token);
+					} else {
+						// Silent refresh failed — force re-consent
+						signOut();
+						resolve(null);
+					}
+				},
+			});
+			refreshClient.requestAccessToken();
+		});
+	}, [state.idToken, signOut, persist]);
+
 	useEffect(() => {
-		setOnUnauthorized(signOut);
-	}, [signOut]);
+		setOnUnauthorized(refreshAccessToken);
+	}, [refreshAccessToken]);
 
 	// --- Request Gmail scope (user gesture) ---
 	const requestGmailScope = useCallback(async (): Promise<string | null> => {

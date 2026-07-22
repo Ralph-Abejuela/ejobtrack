@@ -6,12 +6,42 @@ const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 /**
  * Called when any Gmail API call gets a 401 response.
- * Auth system wires this to signOut so expired tokens trigger re-login.
+ * Should try to refresh the token and return a new one,
+ * or return null if refresh fails (triggers sign-out).
  */
-let _onUnauthorized: (() => void) | null = null;
+let _onUnauthorized: (() => Promise<string | null>) | null = null;
 
-export function setOnUnauthorized(cb: () => void): void {
+export function setOnUnauthorized(
+	cb: (() => Promise<string | null>) | null,
+): void {
 	_onUnauthorized = cb;
+}
+
+/**
+ * Fetch wrapper that auto-retries once on 401 after token refresh.
+ */
+async function fetchWithRetry(
+	url: string,
+	accessToken: string,
+	options?: RequestInit,
+): Promise<Response> {
+	const headers = {
+		Authorization: `Bearer ${accessToken}`,
+		"Content-Type": "application/json",
+		...(options?.headers || {}),
+	};
+
+	let res = await fetch(url, { ...options, headers });
+
+	if (res.status === 401 && _onUnauthorized) {
+		const newToken = await _onUnauthorized();
+		if (newToken) {
+			headers.Authorization = `Bearer ${newToken}`;
+			res = await fetch(url, { ...options, headers });
+		}
+	}
+
+	return res;
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -181,13 +211,6 @@ export function parseMessageMeta(msg: GmailMessage): ParsedEmail {
 
 // ── API calls ──────────────────────────────────────────────────────────────
 
-function authHeaders(accessToken: string): Record<string, string> {
-	return {
-		Authorization: `Bearer ${accessToken}`,
-		"Content-Type": "application/json",
-	};
-}
-
 /** List message IDs with pagination. */
 export async function listMessages(
 	accessToken: string,
@@ -207,10 +230,9 @@ export async function listMessages(
 	}
 
 	const url = `${BASE_URL}/messages?${params.toString()}`;
-	const res = await fetch(url, { headers: authHeaders(accessToken) });
+	const res = await fetchWithRetry(url, accessToken);
 
 	if (!res.ok) {
-		if (res.status === 401) _onUnauthorized?.();
 		const err = await res.text();
 		throw new Error(`Gmail API list failed: ${res.status} — ${err}`);
 	}
@@ -235,10 +257,9 @@ export async function getMessage(
 		metadataHeaders.forEach((h) => params.append("metadataHeaders", h));
 	}
 	const url = `${BASE_URL}/messages/${messageId}?${params.toString()}`;
-	const res = await fetch(url, { headers: authHeaders(accessToken) });
+	const res = await fetchWithRetry(url, accessToken);
 
 	if (!res.ok) {
-		if (res.status === 401) _onUnauthorized?.();
 		const err = await res.text();
 		throw new Error(`Gmail API get failed: ${res.status} — ${err}`);
 	}
