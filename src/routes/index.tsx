@@ -34,7 +34,18 @@ export const Route = createFileRoute("/")({
 });
 
 function JobsPageInner() {
-	const { user } = useAuth();
+	const { user, loading } = useAuth();
+
+	if (loading) {
+		return (
+			<div className="flex items-center justify-center py-20">
+				<div className="flex flex-col items-center gap-3">
+					<div className="size-8 animate-spin rounded-full border-2 border-muted-foreground border-t-foreground" />
+					<p className="text-sm text-muted-foreground">Loading…</p>
+				</div>
+			</div>
+		);
+	}
 
 	if (!user) {
 		return (

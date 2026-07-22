@@ -2,6 +2,7 @@ import type { JobApplication } from "@/lib/jobs/types";
 import { JobStatus } from "@/lib/jobs/types";
 import { STCFG, STATUS_ORDER } from "./config";
 import JobCard from "./JobCard";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
 	Empty,
 	EmptyHeader,
@@ -44,7 +45,27 @@ export default function JobList({
 	lastSyncTime,
 	newCount,
 }: JobListProps) {
-	if (jobs.length === 0 && !syncing) {
+	if (jobs.length === 0) {
+		if (syncing) {
+			return (
+				<div className="space-y-4">
+					{Array.from({ length: 3 }).map((_, i) => (
+						<div key={i} className="flex flex-col gap-2 rounded-lg border p-4">
+							<div className="flex items-center justify-between">
+								<Skeleton className="h-5 w-48" />
+								<Skeleton className="h-4 w-20" />
+							</div>
+							<Skeleton className="h-4 w-64" />
+							<Skeleton className="h-3 w-40" />
+						</div>
+					))}
+					<div className="flex justify-center">
+						<Skeleton className="h-4 w-36" />
+					</div>
+				</div>
+			);
+		}
+
 		return (
 			<Empty>
 				<EmptyHeader>
