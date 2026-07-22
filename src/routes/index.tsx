@@ -105,13 +105,13 @@ function HeroPage() {
 							to="/privacy"
 							className="underline underline-offset-2 transition-colors hover:text-foreground"
 						>
-							Privacy
+							Privacy Policy
 						</Link>
 						<Link
 							to="/terms"
 							className="underline underline-offset-2 transition-colors hover:text-foreground"
 						>
-							Terms
+							Terms of Service
 						</Link>
 						<a
 							href="https://github.com/Ralph-Abejuela/ejobtrack"
