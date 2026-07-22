@@ -14,6 +14,8 @@ if (POSTHOG_KEY) {
 	posthog.init(POSTHOG_KEY, {
 		api_host: "https://ph-proxy.abejuela-ralph-balatucan.workers.dev",
 		capture_pageview: "history_change", // SPA route tracking
+		advanced_disable_decide: true, // kill toolbar + feature flags (not needed)
+		advanced_disable_toolbar_metrics: true,
 		loaded: (ph) => {
 			if (import.meta.env.DEV) ph.opt_out_capturing(); // no dev noise
 		},
