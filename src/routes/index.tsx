@@ -99,6 +99,20 @@ function HeroPage() {
 						})}
 					</div>
 
+					{/* Purpose disclosure for OAuth verification */}
+					<div className="flex flex-col items-center gap-3 rounded-lg border bg-card/50 px-6 py-5 text-center">
+						<h2 className="text-sm font-semibold text-foreground">
+							About This App
+						</h2>
+						<p className="max-w-md text-xs text-muted-foreground leading-relaxed">
+							ejobtrack is a job application tracker that uses read-only Gmail
+							access to detect and organize your application emails from job
+							platforms. It processes everything locally in your browser. No
+							data is sent to any server. Your email content stays private and
+							never leaves your device.
+						</p>
+					</div>
+
 					{/* Footer */}
 					<div className="flex items-center justify-center gap-4 text-xs text-muted-foreground">
 						<Link
