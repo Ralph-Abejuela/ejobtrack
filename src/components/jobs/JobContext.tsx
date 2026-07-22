@@ -15,8 +15,11 @@ import {
 	mergeJobs,
 	mergeIntoNew,
 	undoMerge,
+	pruneStaleDismissals,
 	unIgnoreGroup,
 	getResolutionHistory,
+	restoreDeletedJob,
+	type DismissalMap,
 	deleteHistoryEntry,
 	updateJobStatus,
 	softDeleteJob,
@@ -58,7 +61,7 @@ interface JobContextValue {
 	visibleDuplicates: DuplicateGroup[];
 	showDuplicates: boolean;
 	setShowDuplicates: (v: boolean) => void;
-	dismissed: Set<string>;
+	dismissed: DismissalMap;
 	selectedJobs: Set<string>;
 	merging: string | null;
 	handleDismiss: (groupKey: string) => void;
@@ -72,9 +75,15 @@ interface JobContextValue {
 
 	// Resolution history
 	resolutionHistory: ResolutionEntry[];
+	refreshResolutionHistory: () => void;
 	showHistory: boolean;
 	setShowHistory: (v: boolean) => void;
 	undoing: boolean;
+
+	// Hidden (soft-deleted) jobs
+	hiddenJobs: JobApplication[];
+	restoringId: string | null;
+	handleRestore: (jobId: string) => Promise<void>;
 
 	// Timeline email
 	activeEmailId: string | null;
@@ -102,12 +111,17 @@ export function JobProvider({ children }: { children: ReactNode }) {
 	const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
 	const [showDuplicates, setShowDuplicates] = useState(false);
 	const [merging, setMerging] = useState<string | null>(null);
-	const [dismissed, setDismissed] = useState<Set<string>>(() => {
+	const [dismissed, setDismissed] = useState<DismissalMap>(() => {
 		try {
 			const raw = localStorage.getItem("dismissed_dup_groups");
-			return new Set<string>(raw ? JSON.parse(raw) : []);
+			if (!raw) return {};
+			const parsed = JSON.parse(raw);
+			// Support old array-of-strings format
+			return Array.isArray(parsed)
+				? Object.fromEntries(parsed.map((k: string) => [k, -1]))
+				: parsed;
 		} catch {
-			return new Set<string>();
+			return {};
 		}
 	});
 	const [selectedJobs, setSelectedJobs] = useState<Set<string>>(
@@ -123,37 +137,60 @@ export function JobProvider({ children }: { children: ReactNode }) {
 			await ensureDuplicateIndex(user.email);
 			const result = await getDuplicateGroups();
 			setDuplicates(result);
+
+			// Auto un-ignore dismissed groups when new jobs joined them
+			const groups = result.map((g) => ({
+				groupKey: g.groupKey,
+				count: g.jobs.length,
+			}));
+			const fresh = pruneStaleDismissals(groups);
+			setDismissed((prev) => {
+				const prevKeys = Object.keys(prev);
+				const freshKeys = Object.keys(fresh);
+				const changed =
+					prevKeys.length !== freshKeys.length ||
+					prevKeys.some((k) => prev[k] !== fresh[k]);
+				return changed ? fresh : prev;
+			});
 		})();
 	}, [user?.email, jobs]);
 
 	const visibleDuplicates = useMemo(
-		() => duplicates.filter((g) => !dismissed.has(g.groupKey)),
+		() => duplicates.filter((g) => dismissed[g.groupKey] === undefined),
 		[duplicates, dismissed],
 	);
 
-	const handleDismiss = useCallback((groupKey: string) => {
-		setDismissed((prev) => {
-			const next = new Set(prev);
-			next.add(groupKey);
-			localStorage.setItem("dismissed_dup_groups", JSON.stringify([...next]));
-			return next;
-		});
-		getResolutionHistory(); // ensure fresh
-		toast("Duplicate group ignored", {
-			position: "bottom-right",
-			action: {
-				label: "Undo ignore",
-				onClick: () => {
-					unIgnoreGroup(groupKey);
-					setDismissed((prev) => {
-						const next = new Set(prev);
-						next.delete(groupKey);
-						return next;
-					});
+	const handleDismiss = useCallback(
+		(groupKey: string) => {
+			const group = duplicates.find((g) => g.groupKey === groupKey);
+			const count = group?.jobs.length ?? -1;
+			setDismissed((prev) => {
+				const next = { ...prev, [groupKey]: count };
+				localStorage.setItem("dismissed_dup_groups", JSON.stringify(next));
+				return next;
+			});
+			getResolutionHistory(); // ensure fresh
+			toast("Duplicate group ignored", {
+				position: "bottom-right",
+				action: {
+					label: "Undo ignore",
+					onClick: () => {
+						unIgnoreGroup(groupKey);
+						setDismissed((prev) => {
+							const next = { ...prev };
+							delete next[groupKey];
+							localStorage.setItem(
+								"dismissed_dup_groups",
+								JSON.stringify(next),
+							);
+							return next;
+						});
+					},
 				},
-			},
-		});
-	}, []);
+			});
+		},
+		[duplicates],
+	);
 
 	const toggleSelect = useCallback((jobId: string) => {
 		setSelectedJobs((prev) => {
@@ -169,12 +206,28 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		groupKey: string;
 	} | null>(null);
 
+	// ── Hidden (soft-deleted) jobs ──
+	const [restoringId, setRestoringId] = useState<string | null>(null);
+
+	// Derive hidden jobs from the already-loaded `jobs` array
+	const hiddenJobs = useMemo(
+		() =>
+			jobs
+				.filter((j) => j.deleted)
+				.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
+		[jobs],
+	);
+
 	// ── Resolution history ──
 	const [resolutionHistory, setResolutionHistory] = useState<ResolutionEntry[]>(
 		() => getResolutionHistory(),
 	);
 	const [showHistory, setShowHistory] = useState(false);
 	const [undoing, setUndoing] = useState(false);
+
+	const refreshResolutionHistory = useCallback(() => {
+		setResolutionHistory(getResolutionHistory());
+	}, []);
 
 	// ── Timeline email ──
 	const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
@@ -408,6 +461,23 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		[user?.email, reload],
 	);
 
+	const handleRestore = useCallback(
+		async (jobId: string) => {
+			if (!user?.email) return;
+			setRestoringId(jobId);
+			try {
+				const ok = await restoreDeletedJob(user.email, jobId);
+				if (ok) {
+					toast("Job restored");
+					await reload();
+				}
+			} finally {
+				setRestoringId(null);
+			}
+		},
+		[user?.email, reload],
+	);
+
 	const userEmail = user?.email ?? "";
 
 	return (
@@ -437,9 +507,13 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				mergeNewModal,
 				setMergeNewModal,
 				resolutionHistory,
+				refreshResolutionHistory,
 				showHistory,
 				setShowHistory,
 				undoing,
+				hiddenJobs,
+				restoringId,
+				handleRestore,
 				activeEmailId,
 				setActiveEmailId,
 				selectedEmail,

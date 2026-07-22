@@ -62,6 +62,7 @@ async function processEmails(
 	for (let i = 0; i < total; i++) {
 		const email = emails[i];
 		onProgress?.(i + 1, total);
+		console.log(email);
 		if (await isScanned(email.id)) continue;
 		scannedIds.push(email.id);
 

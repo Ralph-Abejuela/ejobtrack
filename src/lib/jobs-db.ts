@@ -16,8 +16,8 @@ db.version(1).stores({
 	jobs: "id, userEmail, platform, status, company, jobTitle, date, createdAt, updatedAt, [platform+status], [userEmail+status]",
 });
 
-db.version(2).stores({
-	jobs: "id, userEmail, platform, status, company, jobTitle, date, createdAt, updatedAt, [platform+status], [userEmail+status]",
+db.version(3).stores({
+	jobs: "id, userEmail, platform, status, company, jobTitle, date, createdAt, updatedAt, [platform+status], [userEmail+status], [userEmail+deleted]",
 	dupIndex: "&title",
 });
 
@@ -154,6 +154,36 @@ export async function getStatusCounts(
 	return counts;
 }
 
+/** Get soft-deleted jobs sorted by deletion time (descending). */
+export async function getDeletedJobs(
+	userEmail: string,
+): Promise<JobApplication[]> {
+	const all = await db.jobs.where({ userEmail, deleted: true }).toArray();
+	return all.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+}
+
+/** Restore a soft-deleted job, removing the deleted flag. */
+export async function restoreDeletedJob(
+	userEmail: string,
+	id: string,
+): Promise<boolean> {
+	const job = await db.jobs.get(id);
+	if (!job || job.userEmail !== userEmail || !job.deleted) return false;
+
+	await db.transaction("rw", db.jobs, async () => {
+		const restored: JobApplication = {
+			...job,
+			deleted: false,
+			updatedAt: Date.now(),
+		};
+		await db.jobs.put(restored);
+	});
+	// Re-add to duplicate index
+	await addToDuplicateIndex({ id: job.id, jobTitle: job.jobTitle });
+
+	return true;
+}
+
 export async function clearUserJobs(userEmail: string): Promise<void> {
 	await db.jobs.where({ userEmail }).delete();
 }
@@ -219,28 +249,60 @@ export function clearResolutionHistory(): void {
 	clearResolutionSnapshots();
 }
 
-/** Re-dismiss a group that was undo-unignored. */
-export function reDismissGroup(groupKey: string): void {
+/** Dismissal map: groupKey → job count at time of dismissal. */
+export interface DismissalMap {
+	[groupKey: string]: number;
+}
+
+function readDismissals(): DismissalMap {
 	try {
 		const raw = localStorage.getItem("dismissed_dup_groups");
-		const set = new Set<string>(raw ? JSON.parse(raw) : []);
-		set.add(groupKey);
-		localStorage.setItem("dismissed_dup_groups", JSON.stringify([...set]));
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		// Support both old Set-array and new Record formats
+		return Array.isArray(parsed)
+			? Object.fromEntries(parsed.map((k: string) => [k, -1]))
+			: parsed;
 	} catch {
-		/* ignore */
+		return {};
 	}
+}
+
+function writeDismissals(map: DismissalMap): void {
+	localStorage.setItem("dismissed_dup_groups", JSON.stringify(map));
+}
+
+/** Re-dismiss a group that was undo-unignored. */
+export function reDismissGroup(groupKey: string): void {
+	const map = readDismissals();
+	map[groupKey] = -1;
+	writeDismissals(map);
 }
 
 /** Remove a group from the dismissed set (undo ignore). */
 export function unIgnoreGroup(groupKey: string): void {
-	try {
-		const raw = localStorage.getItem("dismissed_dup_groups");
-		const set = new Set<string>(raw ? JSON.parse(raw) : []);
-		set.delete(groupKey);
-		localStorage.setItem("dismissed_dup_groups", JSON.stringify([...set]));
-	} catch {
-		/* ignore */
+	const map = readDismissals();
+	delete map[groupKey];
+	writeDismissals(map);
+}
+
+/**
+ * Check if a group was dismissed with fewer jobs than it has now.
+ * Returns the updated DismissalMap if auto-un-ignore should happen.
+ */
+export function pruneStaleDismissals(
+	groups: { groupKey: string; count: number }[],
+): DismissalMap {
+	const map = readDismissals();
+	let changed = false;
+	for (const g of groups) {
+		if (map[g.groupKey] !== undefined && map[g.groupKey] < g.count) {
+			delete map[g.groupKey];
+			changed = true;
+		}
 	}
+	if (changed) writeDismissals(map);
+	return map;
 }
 
 /** Group of records that are likely the same job with slightly different names. */
@@ -252,7 +314,7 @@ export interface DuplicateGroup {
 
 // ── Duplicate index (incremental hash) ─────────────────────────────────────
 
-/** Normalize a job title for hash key. */
+/** Normalize a string for hash key. */
 function normalizeTitle(title: string): string {
 	return title.toLowerCase().replace(/\s+/g, " ");
 }
@@ -455,6 +517,10 @@ export async function mergeIntoNew(
 	const keep = valid[0];
 	const toRemove = valid.slice(1);
 
+	// Snapshot all records before mutating
+	const keepSnapshot = { ...keep };
+	const removeSnapshots = toRemove.map((r) => ({ ...r }));
+
 	// Merge history from all, sorted by date
 	const merged = toRemove
 		.flatMap((r) => r.history)
@@ -494,7 +560,9 @@ export async function mergeIntoNew(
 		jobTitle: newTitle ?? keep.jobTitle,
 	});
 
-	const groupKey = keep.jobTitle.toLowerCase().replace(/\s+/g, " ");
+	const groupKey = (newTitle ?? keep.jobTitle)
+		.toLowerCase()
+		.replace(/\s+/g, " ");
 	const entry: ResolutionEntry = {
 		groupKey,
 		action: "merge",
@@ -502,6 +570,18 @@ export async function mergeIntoNew(
 		keepId: keep.id,
 		removeId: toRemove.map((r) => r.id).join(","),
 	};
+	// Store snapshots so undo can restore
+	try {
+		localStorage.setItem(
+			`${REMOVED_PREFIX}${entry.timestamp}`,
+			JSON.stringify({
+				keepSnapshot,
+				removeSnapshot: removeSnapshots,
+			}),
+		);
+	} catch {
+		/* localStorage full — undo unavailable */
+	}
 	saveResolution(entry);
 
 	return true;
@@ -527,8 +607,14 @@ export async function undoMerge(timestamp: number): Promise<boolean> {
 		await db.transaction("rw", db.jobs, async () => {
 			// Revert keep to pre-merge state
 			await db.jobs.put(keepSnapshot);
-			// Restore removed record
-			await db.jobs.put(removeSnapshot);
+			// Restore removed record(s) — array or single
+			if (Array.isArray(removeSnapshot)) {
+				for (const rec of removeSnapshot) {
+					await db.jobs.put(rec);
+				}
+			} else {
+				await db.jobs.put(removeSnapshot);
+			}
 		});
 
 		// Rebuild duplicate index — safest after undo (titles/IDs may differ)
@@ -536,10 +622,19 @@ export async function undoMerge(timestamp: number): Promise<boolean> {
 			id: keepSnapshot.id,
 			jobTitle: keepSnapshot.jobTitle,
 		});
-		await addToDuplicateIndex({
-			id: removeSnapshot.id,
-			jobTitle: removeSnapshot.jobTitle,
-		});
+		if (Array.isArray(removeSnapshot)) {
+			for (const rec of removeSnapshot) {
+				await addToDuplicateIndex({
+					id: rec.id,
+					jobTitle: rec.jobTitle,
+				});
+			}
+		} else {
+			await addToDuplicateIndex({
+				id: removeSnapshot.id,
+				jobTitle: removeSnapshot.jobTitle,
+			});
+		}
 
 		// Remove snapshots
 		localStorage.removeItem(`${REMOVED_PREFIX}${timestamp}`);

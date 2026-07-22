@@ -213,7 +213,8 @@ export default function JobCard({
 								Edit Title
 							</Button>
 							<Button
-								variant="ghost"
+								variant="destructive"
+								className={"bg-transparent"}
 								size="sm"
 								onClick={() => onDelete(job.id)}
 							>

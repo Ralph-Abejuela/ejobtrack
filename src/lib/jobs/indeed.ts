@@ -1,77 +1,170 @@
 import { JobPlatform, JobStatus, type JobPlatformParser } from "./types";
 
 /**
- * Parser for Indeed job application confirmation emails (indeedapply@indeed.com).
+ * Parser for Indeed job emails — handles both confirmation and rejection/status-update emails.
  *
- * Subject: "Indeed Application: {Job Title}"
- * BodyHtml contains job title in <h1><a> and company in <strong><a> after the h1.
+ * Confirmation: from indeedapply@indeed.com
+ *   Subject: "Indeed Application: {Job Title}"
+ *   BodyHtml: job title in <h1><a>, company in <strong><a> after the h1.
+ *   Status: APPLIED
  *
- * Status: Always APPLIED for these confirmation emails.
+ * Status update / rejection: from noreply@indeed.com
+ *   Subject: "An update on your application from {Company}"
+ *   Body: "Thank you for applying to the {Job Title} position at {Company}"
+ *   Status: REJECTED when body contains "not selected" / "moved to the next step"
  */
 export const indeedParser: JobPlatformParser = {
 	platform: JobPlatform.INDEED,
-	fromAddresses: ["indeedapply@indeed.com"],
+	fromAddresses: ["indeedapply@indeed.com", "noreply@indeed.com"],
 
 	parse(email) {
-		const { subject, bodyHtml, bodyClean } = email;
+		const { subject } = email;
 
-		// Confirm it's an Indeed application email via subject
+		const rawEmail = email.from.match(/<([^>]+)>/)?.[1] ?? email.from;
+		const isFromNoreply = rawEmail.toLowerCase().includes("noreply@indeed.com");
+
+		// ── Confirmation email (indeedapply@indeed.com) ──
 		const indeedMatch = subject.match(/^Indeed Application:\s*(.+)/i);
-		if (!indeedMatch) return null;
-
-		const subjectTitle = indeedMatch[1].trim();
-
-		// ── Extract job title ──
-		// Prefer bodyHtml <h1><a>, fall back to subject
-		let jobTitle = "";
-		if (bodyHtml) {
-			const h1Match = bodyHtml.match(
-				/<h1[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h1>/i,
-			);
-			if (h1Match) {
-				jobTitle = h1Match[1].replace(/<[^>]*>/g, "").trim();
-			}
-		}
-		if (!jobTitle) jobTitle = subjectTitle;
-
-		// ── Extract company ──
-		// Company is in <strong><a>...</a></strong> that appears AFTER the <h1>
-		let company = "";
-		if (bodyHtml) {
-			// Find everything after the first </h1>
-			const afterH1 = bodyHtml.split("</h1>")[1];
-			if (afterH1) {
-				const strongMatch = afterH1.match(
-					/<strong[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/strong>/i,
-				);
-				if (strongMatch) {
-					company = strongMatch[1].replace(/<[^>]*>/g, "").trim();
-				}
-			}
+		if (indeedMatch) {
+			return parseConfirmation(email, indeedMatch[1].trim());
 		}
 
-		if (!company) company = "Unknown Company";
+		// ── Status update / rejection email (noreply@indeed.com) ──
+		if (isFromNoreply) {
+			return parseStatusUpdate(email);
+		}
 
-		// ── Extract URL ──
-		const url = extractIndeedUrl(bodyHtml ?? bodyClean ?? email.body);
-
-		return [
-			{
-				platform: JobPlatform.INDEED,
-				jobTitle,
-				company,
-				status: JobStatus.APPLIED,
-				body: email.body,
-				snippet: email.snippet,
-				subject: email.subject,
-				from: email.from,
-				url,
-				date: new Date(Number(email.internalDate)).toISOString(),
-				emailId: email.id,
-			},
-		];
+		return null;
 	},
 };
+
+/** Parse Indeed application confirmation email (indeedapply@indeed.com). */
+function parseConfirmation(
+	email: Parameters<JobPlatformParser["parse"]>[0],
+	subjectTitle: string,
+) {
+	const { bodyHtml } = email;
+
+	// ── Extract job title ──
+	let jobTitle = "";
+	if (bodyHtml) {
+		const h1Match = bodyHtml.match(
+			/<h1[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h1>/i,
+		);
+		if (h1Match) {
+			jobTitle = h1Match[1].replace(/<[^>]*>/g, "").trim();
+		}
+	}
+	if (!jobTitle) jobTitle = subjectTitle;
+
+	// ── Extract company ──
+	let company = "";
+	if (bodyHtml) {
+		const afterH1 = bodyHtml.split("</h1>")[1];
+		if (afterH1) {
+			const strongMatch = afterH1.match(
+				/<strong[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/strong>/i,
+			);
+			if (strongMatch) {
+				company = strongMatch[1].replace(/<[^>]*>/g, "").trim();
+			}
+		}
+	}
+	if (!company) company = "Unknown Company";
+
+	const url = extractIndeedUrl(bodyHtml ?? email.bodyClean ?? email.body);
+
+	return [
+		{
+			platform: JobPlatform.INDEED,
+			jobTitle,
+			company,
+			status: JobStatus.APPLIED,
+			body: email.body,
+			snippet: email.snippet,
+			subject: email.subject,
+			from: email.from,
+			url,
+			date: new Date(Number(email.internalDate)).toISOString(),
+			emailId: email.id,
+		},
+	];
+}
+
+/** Parse Indeed status update / rejection email (noreply@indeed.com). */
+function parseStatusUpdate(email: Parameters<JobPlatformParser["parse"]>[0]) {
+	const { subject, bodyHtml, bodyClean, body, snippet } = email;
+
+	// Skip non-status-update emails sent from noreply (e.g. irrelevant Indeed mail)
+	if (!/update on your application/i.test(subject)) return null;
+
+	const richText = bodyClean ?? body ?? "";
+
+	// ── Extract company from subject: "An update on your application from {Company}" ──
+	let company = "";
+	const companySubjectMatch = subject.match(/from\s+(.+?)\s*$/i);
+	if (companySubjectMatch) {
+		company = companySubjectMatch[1].trim();
+	}
+
+	// ── Extract job title + company from body: "Thank you for applying to the {Title} position at {Company}" ──
+	let jobTitle = "";
+	const applyMatch = richText.match(
+		/thank you for applying to the (.+?)\s+(?:position|job|role)\s+at\s+(.+?)(?:[.,!\n]|$)/i,
+	);
+	if (applyMatch) {
+		jobTitle = applyMatch[1].trim();
+		if (!company) company = applyMatch[2].trim();
+	}
+
+	// ── Also try from bodyHtml: <p>Thank you for applying to the {Title} position at {Company}</p> ──
+	if (!jobTitle && bodyHtml) {
+		const htmlApplyMatch = bodyHtml.match(
+			/<p[^>]*>thank you for applying to the (.+?)\s+(?:position|job|role)\s+at\s+(.+?)(?:[.,!<]|$)/i,
+		);
+		if (htmlApplyMatch) {
+			jobTitle = htmlApplyMatch[1].trim();
+			if (!company) company = htmlApplyMatch[2].trim();
+		}
+	}
+
+	// ── Detect status ──
+	const allText = `${subject} ${richText} ${snippet}`;
+	let status = JobStatus.APPLIED;
+
+	if (
+		/not selected|will not be moving forward|not moving forward|regret to inform|unsuccessful|application was not selected/i.test(
+			allText,
+		)
+	) {
+		status = JobStatus.REJECTED;
+	} else if (
+		/interview|schedule a time|phone screen|would like to meet/i.test(allText)
+	) {
+		status = JobStatus.INTERVIEW;
+	}
+
+	if (!company) company = "Unknown Company";
+	if (!jobTitle) jobTitle = "Unknown Position";
+
+	const url = extractIndeedUrl(bodyHtml ?? bodyClean ?? body);
+
+	return [
+		{
+			platform: JobPlatform.INDEED,
+			jobTitle,
+			company,
+			status,
+			body: email.body,
+			snippet: email.snippet,
+			subject: email.subject,
+			from: email.from,
+			url,
+			date: new Date(Number(email.internalDate)).toISOString(),
+			emailId: email.id,
+		},
+	];
+}
 
 /** Extract Indeed job posting URL from email body/HTML. */
 function extractIndeedUrl(text: string): string {

@@ -5,28 +5,22 @@ import {
 	Merge,
 	Loader2,
 } from "lucide-react";
-import type { DuplicateGroup, ResolutionEntry } from "@/lib/jobs-db";
+import type { DuplicateGroup } from "@/lib/jobs-db";
 import { STCFG } from "./config";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { formatTimeAgo } from "@/lib/utils";
 
 interface DuplicatesPanelProps {
 	visibleDuplicates: DuplicateGroup[];
 	selectedJobs: ReadonlySet<string>;
 	merging: string | null;
 	showDuplicates: boolean;
-	showHistory: boolean;
-	resolutionHistory: ResolutionEntry[];
-	undoing: boolean;
 	onToggleDuplicates: () => void;
-	onToggleHistory: () => void;
 	onDismiss: (groupKey: string) => void;
 	onToggleSelect: (jobId: string) => void;
 	onMergeSelected: (groupKey: string) => void;
 	onMergeNew: (groupKey: string) => void;
 	onScrollToJob: (jobId: string) => void;
-	onUndoMerge: (timestamp: number) => void;
 }
 
 export default function DuplicatesPanel({
@@ -34,17 +28,12 @@ export default function DuplicatesPanel({
 	selectedJobs,
 	merging,
 	showDuplicates,
-	showHistory,
-	resolutionHistory,
-	undoing,
 	onToggleDuplicates,
-	onToggleHistory,
 	onDismiss,
 	onToggleSelect,
 	onMergeSelected,
 	onMergeNew,
 	onScrollToJob,
-	onUndoMerge,
 }: DuplicatesPanelProps) {
 	if (visibleDuplicates.length === 0) return null;
 
@@ -158,95 +147,8 @@ export default function DuplicatesPanel({
 							</div>
 						);
 					})}
-
-					<ResolutionHistory
-						showHistory={showHistory}
-						resolutionHistory={resolutionHistory}
-						undoing={undoing}
-						onToggleHistory={onToggleHistory}
-						onUndoMerge={onUndoMerge}
-					/>
 				</div>
 			)}
 		</div>
-	);
-}
-
-function ResolutionHistory({
-	showHistory,
-	resolutionHistory,
-	undoing,
-	onToggleHistory,
-	onUndoMerge,
-}: {
-	showHistory: boolean;
-	resolutionHistory: ResolutionEntry[];
-	undoing: boolean;
-	onToggleHistory: () => void;
-	onUndoMerge: (timestamp: number) => void;
-}) {
-	return (
-		<>
-			<Button
-				variant="ghost"
-				onClick={onToggleHistory}
-				className="flex w-full items-center gap-1.5 pt-2 text-[11px] font-medium text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
-			>
-				{showHistory ? (
-					<ChevronUp className="size-3" />
-				) : (
-					<ChevronDown className="size-3" />
-				)}
-				History ({resolutionHistory.length})
-			</Button>
-			{showHistory && (
-				<div className="mt-2 space-y-1">
-					{resolutionHistory.length === 0 && (
-						<p className="text-[11px] text-amber-500">No history yet.</p>
-					)}
-					{resolutionHistory.map((r) => (
-						<div
-							key={r.timestamp}
-							className="flex items-center gap-2 rounded px-2 py-1 text-[11px]"
-						>
-							<span
-								className={
-									r.action === "ignore" ? "text-amber-500" : "text-emerald-500"
-								}
-							>
-								{r.action === "ignore" || r.action === "ignore-undo"
-									? "Ignored"
-									: r.action === "merge-undo"
-										? "Merge undone"
-										: "Merged"}
-							</span>
-							<span className="text-amber-700 dark:text-amber-300">
-								{r.groupKey.split(":")[1] ?? r.groupKey}
-							</span>
-							<span className="ml-auto text-amber-400">
-								{formatTimeAgo(r.timestamp)}
-							</span>
-							{r.action === "merge" && (
-								<Button
-									variant="ghost"
-									size="xs"
-									onClick={() => onUndoMerge(r.timestamp)}
-									disabled={undoing}
-								>
-									{undoing ? (
-										<Loader2 className="size-3 animate-spin" />
-									) : (
-										"Undo merge"
-									)}
-								</Button>
-							)}
-							{(r.action === "ignore" || r.action === "merge-undo") && (
-								<span className="text-[10px] text-amber-400">undone</span>
-							)}
-						</div>
-					))}
-				</div>
-			)}
-		</>
 	);
 }

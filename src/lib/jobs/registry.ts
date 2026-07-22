@@ -21,6 +21,7 @@ const IGNORE_SENDERS = [
 	"LinkedIn <career-interests-noreply@linkedin.com>",
 	"LinkedIn <messages-noreply@linkedin.com>",
 	"DigitalOcean <team@info.digitalocean.com>",
+	"LinkedIn <editors-noreply@linkedin.com>",
 ];
 
 /** Registry of all platform-specific parsers. Add new parsers here. */

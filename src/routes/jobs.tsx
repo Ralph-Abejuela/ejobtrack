@@ -1,9 +1,22 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useAuth } from "@/lib/auth";
 import { useJobContext, JobProvider } from "@/components/jobs/JobContext";
-import { undoMerge, getResolutionHistory } from "@/lib/jobs-db";
+import { undoMerge } from "@/lib/jobs-db";
+import HiddenJobsPanel from "@/components/jobs/HiddenJobsPanel";
+import {
+	Sheet,
+	SheetTrigger,
+	SheetContent,
+	SheetHeader,
+	SheetTitle,
+} from "@/components/ui/sheet";
 import { useState, useCallback } from "react";
-import { Loader2, RefreshCw, Briefcase } from "lucide-react";
+import {
+	Loader2,
+	RefreshCw,
+	Briefcase,
+	History as HistoryIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Progress, ProgressLabel } from "@/components/ui/progress";
@@ -49,9 +62,6 @@ function JobsContent() {
 		merging,
 		showDuplicates,
 		setShowDuplicates,
-		showHistory,
-		setShowHistory,
-		resolutionHistory,
 		activeEmailId,
 		setActiveEmailId,
 		selectedEmail,
@@ -66,6 +76,11 @@ function JobsContent() {
 		handleDeleteHistoryEntry,
 		handleDeleteJob,
 		handleUpdateJobTitle,
+		resolutionHistory,
+		refreshResolutionHistory,
+		hiddenJobs,
+		restoringId,
+		handleRestore,
 	} = useJobContext();
 
 	const [undoingMerge, setUndoingMerge] = useState(false);
@@ -76,7 +91,7 @@ function JobsContent() {
 			try {
 				const ok = await undoMerge(timestamp);
 				if (ok) {
-					getResolutionHistory();
+					refreshResolutionHistory();
 					await reload();
 				}
 			} finally {
@@ -156,17 +171,38 @@ function JobsContent() {
 				</Alert>
 			)}
 
+			{/* History & Hidden Jobs Sheet */}
+			<div className="flex items-center gap-2">
+				<Sheet>
+					<SheetTrigger render={<Button variant="outline" size="sm" />}>
+						<HistoryIcon data-icon="inline-start" />
+						History &amp; Hidden
+					</SheetTrigger>
+					<SheetContent side="right">
+						<SheetHeader>
+							<SheetTitle>History &amp; Hidden Jobs</SheetTitle>
+						</SheetHeader>
+						<div className="flex-1 overflow-y-auto">
+							<HiddenJobsPanel
+								resolutionHistory={resolutionHistory}
+								deletedJobs={hiddenJobs}
+								restoringId={restoringId}
+								onRestore={handleRestore}
+								onUndoMerge={handleUndoMerge}
+								undoing={undoingMerge}
+							/>
+						</div>
+					</SheetContent>
+				</Sheet>
+			</div>
+
 			{/* Duplicates */}
 			<DuplicatesPanel
 				visibleDuplicates={visibleDuplicates}
 				selectedJobs={selectedJobs}
 				merging={merging}
 				showDuplicates={showDuplicates}
-				showHistory={showHistory}
-				resolutionHistory={resolutionHistory}
-				undoing={undoingMerge}
 				onToggleDuplicates={() => setShowDuplicates(!showDuplicates)}
-				onToggleHistory={() => setShowHistory(!showHistory)}
 				onDismiss={handleDismiss}
 				onToggleSelect={toggleSelect}
 				onMergeSelected={handleMergeSelected}
@@ -179,7 +215,6 @@ function JobsContent() {
 							?.scrollIntoView({ behavior: "smooth", block: "center" });
 					});
 				}}
-				onUndoMerge={handleUndoMerge}
 			/>
 
 			{/* Merge into New modal */}

@@ -32,8 +32,8 @@ export default function GmailAuthModal() {
 					<AlertDialogMedia>
 						<ShieldAlert className="size-8 text-amber-500" />
 					</AlertDialogMedia>
-					<AlertDialogTitle>Gmail Access Required</AlertDialogTitle>
-					<AlertDialogDescription>
+					<AlertDialogTitle className={"text-xl font-bold"}>Gmail Access Required</AlertDialogTitle>
+					<AlertDialogDescription className={"text-md"}>
 						ejobtrack needs read-only access to your Gmail inbox to scan for job
 						application updates from JobStreet and LinkedIn.
 					</AlertDialogDescription>
@@ -44,7 +44,7 @@ export default function GmailAuthModal() {
 						<AlertDialogAction
 							onClick={requestGmailScope}
 							disabled={requestingScope}
-							className="w-full gap-2"
+							className="w-full gap-2 text-md"
 						>
 							{requestingScope ? (
 								<Loader2 className="size-4 animate-spin" />
@@ -59,7 +59,7 @@ export default function GmailAuthModal() {
 							variant="outline"
 							onClick={signOut}
 							disabled={requestingScope}
-							className="w-full gap-2 text-muted-foreground"
+							className="w-full gap-2 text-muted-foreground text-md"
 						>
 							<LogOut className="size-4" />
 							Sign Out
