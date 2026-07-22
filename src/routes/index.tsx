@@ -47,8 +47,11 @@ function HeroPage() {
 					{/* Hero text */}
 					<div className="flex flex-col items-center gap-4">
 						<h1 className="font-heading text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
-							Track your job applications from Gmail
+							ejobtrack
 						</h1>
+						<p className="text-lg text-muted-foreground">
+							Track your job applications from Gmail
+						</p>
 						<p className="mx-auto max-w-xl text-lg text-muted-foreground">
 							ejobtrack connects to your inbox and automatically builds a
 							dashboard of every job application. No backend. No setup. Your
