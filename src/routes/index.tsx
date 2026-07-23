@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -114,28 +114,6 @@ function HeroPage() {
 							data is sent to any server. Your email content stays private and
 							never leaves your device.
 						</p>
-					</div>
-
-					{/* Footer */}
-					<div className="flex items-center justify-center gap-4 text-xs text-muted-foreground">
-						<Link
-							to="/privacy"
-							className="underline underline-offset-2 transition-colors hover:text-foreground"
-						>
-							Privacy Policy
-						</Link>
-						<Link
-							to="/terms"
-							className="underline underline-offset-2 transition-colors hover:text-foreground"
-						>
-							Terms of Service
-						</Link>
-						<a
-							href="https://github.com/Ralph-Abejuela/ejobtrack"
-							className="underline underline-offset-2 transition-colors hover:text-foreground"
-						>
-							GitHub
-						</a>
 					</div>
 				</div>
 			</div>
