@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
+import { z } from "zod";
 import { useAuth } from "@/lib/auth";
 import { useJobContext, JobProvider } from "@/components/jobs/JobContext";
 import { undoMerge, mergeIntoNew } from "@/lib/jobs-db";
@@ -22,12 +23,40 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Progress, ProgressLabel } from "@/components/ui/progress";
 import StatusSummary from "@/components/jobs/StatusSummary";
+import { STATUS_ORDER } from "@/components/jobs/config";
 import { toast } from "sonner";
 import { JobsPageSkeleton } from "@/components/jobs/JobsPageSkeleton";
 import DuplicatesPanel from "@/components/jobs/DuplicatesPanel";
 import JobList from "@/components/jobs/JobList";
+import JobToolbar from "@/components/jobs/JobToolbar";
+import type { SearchField, GroupMode } from "@/components/jobs/JobToolbar";
+import type { JobApplication } from "@/lib/jobs/types";
+
+const jobsSearchSchema = z.object({
+	search: z.string().catch(""),
+	field: z.enum(["all", "jobTitle", "company", "subject", "from"]).catch("all"),
+	excluded: z.array(z.string()).catch([] as string[]),
+	dp: z.string().catch("all"),
+	df: z.string().catch(""),
+	dt: z.string().catch(""),
+	group: z.enum(["status", "none"]).catch("status"),
+});
 
 export const Route = createFileRoute("/jobs")({
+	validateSearch: jobsSearchSchema,
+	search: {
+		middlewares: [
+			stripSearchParams({
+				search: "",
+				field: "all" as const,
+				excluded: [] as string[],
+				dp: "all",
+				df: "",
+				dt: "",
+				group: "status" as const,
+			}),
+		],
+	},
 	component: () => (
 		<JobProvider>
 			<JobsPageInner />
@@ -113,11 +142,9 @@ function JobsContent() {
 	const {
 		jobs,
 		loaded,
-		statusCounts,
 		state,
 		loadMore,
 		reload,
-		grouped,
 		expandedJob,
 		setExpandedJob,
 		visibleDuplicates,
@@ -146,6 +173,22 @@ function JobsContent() {
 	const [mergeWithJobId, setMergeWithJobId] = useState<string | null>(null);
 	const [undoingMerge, setUndoingMerge] = useState(false);
 	const [mergingWith, setMergingWith] = useState(false);
+
+	// ── Search / Filter / Group state (from URL search params) ──
+	const {
+		search: searchQuery,
+		field: searchField,
+		excluded,
+		dp: datePreset,
+		df: dateFrom,
+		dt: dateTo,
+		group: groupMode,
+	} = Route.useSearch();
+	const navigate = Route.useNavigate();
+	const selectedStatuses = useMemo(
+		() => new Set(STATUS_ORDER.filter((s) => !excluded.includes(s))),
+		[excluded],
+	);
 
 	const handleUndoMerge = useCallback(
 		async (timestamp: number) => {
@@ -213,6 +256,196 @@ function JobsContent() {
 		},
 		[user?.email, reload],
 	);
+
+	// ── Search / Filter / Group handlers ──
+	const handleSearchChange = useCallback(
+		(query: string, field: SearchField) => {
+			navigate({
+				replace: true,
+				search: (prev) => ({ ...prev, search: query, field }),
+			});
+		},
+		[navigate],
+	);
+
+	const handleStatusToggle = useCallback(
+		(status: string) => {
+			navigate({
+				replace: true,
+				search: (prev) => {
+					const set = new Set(prev.excluded);
+					if (set.has(status)) set.delete(status);
+					else set.add(status);
+					return { ...prev, excluded: Array.from(set) };
+				},
+			});
+		},
+		[navigate],
+	);
+
+	const handleClearStatuses = useCallback(() => {
+		navigate({
+			replace: true,
+			search: (prev) => ({ ...prev, excluded: [] }),
+		});
+	}, [navigate]);
+
+	const handleDatePresetChange = useCallback(
+		(preset: string) => {
+			navigate({
+				replace: true,
+				search: (prev) => ({ ...prev, dp: preset }),
+			});
+		},
+		[navigate],
+	);
+
+	const handleDateFromChange = useCallback(
+		(date: string) => {
+			navigate({
+				replace: true,
+				search: (prev) => ({
+					...prev,
+					df: date,
+					...(date ? { dp: "custom" } : {}),
+				}),
+			});
+		},
+		[navigate],
+	);
+
+	const handleDateToChange = useCallback(
+		(date: string) => {
+			navigate({
+				replace: true,
+				search: (prev) => ({
+					...prev,
+					dt: date,
+					...(date ? { dp: "custom" } : {}),
+				}),
+			});
+		},
+		[navigate],
+	);
+
+	const handleGroupModeChange = useCallback(
+		(mode: GroupMode) => {
+			navigate({
+				replace: true,
+				search: (prev) => ({ ...prev, group: mode }),
+			});
+		},
+		[navigate],
+	);
+
+	// ── Filtered + sorted jobs ──
+	const filteredJobs = useMemo(() => {
+		const active = jobs.filter((j) => !j.deleted);
+
+		// Search filter
+		let result = active.filter((job) => {
+			if (!searchQuery) return true;
+
+			// Hidden body: prefix search
+			if (searchField === "all" && searchQuery.startsWith("body:")) {
+				const bodyQ = searchQuery.slice(5).trim().toLowerCase();
+				if (!bodyQ) return true;
+				return (job.body || "").toLowerCase().includes(bodyQ);
+			}
+
+			const q = searchQuery.toLowerCase();
+			switch (searchField) {
+				case "all":
+					return [job.jobTitle, job.company, job.subject, job.from].some((v) =>
+						v.toLowerCase().includes(q),
+					);
+				case "jobTitle":
+					return job.jobTitle.toLowerCase().includes(q);
+				case "company":
+					return job.company.toLowerCase().includes(q);
+				case "subject":
+					return job.subject.toLowerCase().includes(q);
+				case "from":
+					return job.from.toLowerCase().includes(q);
+				default:
+					return true;
+			}
+		});
+
+		// Status filter
+		result = result.filter((job) => selectedStatuses.has(job.status));
+
+		// Date filter
+		if (datePreset !== "all") {
+			const now = new Date();
+			let cutoff: Date | null = null;
+
+			switch (datePreset) {
+				case "today":
+					cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+					break;
+				case "7d":
+					cutoff = new Date(now.getTime() - 7 * 86400000);
+					break;
+				case "30d":
+					cutoff = new Date(now.getTime() - 30 * 86400000);
+					break;
+				case "90d":
+					cutoff = new Date(now.getTime() - 90 * 86400000);
+					break;
+				case "custom":
+					break;
+			}
+
+			if (datePreset === "custom") {
+				if (dateFrom) {
+					const from = new Date(dateFrom);
+					result = result.filter((job) => new Date(job.date) >= from);
+				}
+				if (dateTo) {
+					const to = new Date(dateTo);
+					to.setHours(23, 59, 59, 999);
+					result = result.filter((job) => new Date(job.date) <= to);
+				}
+			} else if (cutoff) {
+				result = result.filter((job) => new Date(job.date) >= cutoff);
+			}
+		}
+
+		// Sort by date descending (newest first)
+		result.sort(
+			(a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+		);
+
+		return result;
+	}, [
+		jobs,
+		searchQuery,
+		searchField,
+		selectedStatuses,
+		datePreset,
+		dateFrom,
+		dateTo,
+	]);
+
+	// ── Grouped from filtered jobs (for status mode) ──
+	const filteredGrouped = useMemo(() => {
+		const map: Record<string, JobApplication[]> = {};
+		for (const s of STATUS_ORDER) map[s] = [];
+		for (const j of filteredJobs) {
+			if (map[j.status]) map[j.status].push(j);
+		}
+		return map;
+	}, [filteredJobs]);
+
+	// ── Status counts from filtered jobs ──
+	const filteredStatusCounts = useMemo(() => {
+		const counts: Record<string, number> = {};
+		for (const j of filteredJobs) {
+			counts[j.status] = (counts[j.status] ?? 0) + 1;
+		}
+		return counts;
+	}, [filteredJobs]);
 
 	if (!loaded) return <JobsPageSkeleton />;
 
@@ -295,6 +528,23 @@ function JobsContent() {
 				</Sheet>
 			</div>
 
+			<JobToolbar
+				searchQuery={searchQuery}
+				searchField={searchField}
+				onSearchChange={handleSearchChange}
+				selectedStatuses={selectedStatuses}
+				onStatusToggle={handleStatusToggle}
+				onClearStatuses={handleClearStatuses}
+				datePreset={datePreset}
+				dateFrom={dateFrom}
+				dateTo={dateTo}
+				onDatePresetChange={handleDatePresetChange}
+				onDateFromChange={handleDateFromChange}
+				onDateToChange={handleDateToChange}
+				groupMode={groupMode}
+				onGroupModeChange={handleGroupModeChange}
+			/>
+
 			<DuplicatesPanel
 				visibleDuplicates={visibleDuplicates}
 				selectedJobs={selectedJobs}
@@ -314,11 +564,12 @@ function JobsContent() {
 				}}
 			/>
 
-			<StatusSummary statusCounts={statusCounts} />
+			<StatusSummary statusCounts={filteredStatusCounts} />
 
 			<JobList
-				jobs={jobs.filter((j) => !j.deleted)}
-				grouped={grouped}
+				jobs={filteredJobs}
+				grouped={filteredGrouped}
+				groupMode={groupMode}
 				expandedJob={expandedJob}
 				activeEmailId={activeEmailId}
 				selectedEmail={selectedEmail}

@@ -10,9 +10,12 @@ import {
 	EmptyDescription,
 } from "@/components/ui/empty";
 
+import type { GroupMode } from "./JobToolbar";
+
 interface JobListProps {
 	jobs: JobApplication[];
 	grouped: Record<string, JobApplication[]>;
+	groupMode: GroupMode;
 	expandedJob: string | null;
 	activeEmailId: string | null;
 	selectedEmail: { subject: string; from: string; body: string } | null;
@@ -32,6 +35,7 @@ interface JobListProps {
 export default function JobList({
 	jobs,
 	grouped,
+	groupMode,
 	expandedJob,
 	activeEmailId,
 	selectedEmail,
@@ -85,54 +89,88 @@ export default function JobList({
 
 	return (
 		<>
-			{STATUS_ORDER.map((status) => {
-				const sectionJobs = grouped[status];
-				if (sectionJobs.length === 0) return null;
-				const cfg = STCFG[status];
-				const Icon = cfg.icon;
+			{groupMode === "status" ? (
+				STATUS_ORDER.map((status) => {
+					const sectionJobs = grouped[status] ?? [];
+					if (sectionJobs.length === 0) return null;
+					const cfg = STCFG[status];
+					const Icon = cfg.icon;
 
-				return (
-					<section key={status} className="space-y-2">
-						<h2
-							className={`flex items-center gap-2 text-sm font-semibold ${cfg.color}`}
-						>
-							<Icon className="size-4" />
-							{cfg.label}
-							<span className="text-xs text-muted-foreground font-normal">
-								({sectionJobs.length})
-							</span>
-						</h2>
+					return (
+						<section key={status} className="flex flex-col gap-2">
+							<h2
+								className={`flex items-center gap-2 text-sm font-semibold ${cfg.color}`}
+							>
+								<Icon className="size-4" />
+								{cfg.label}
+								<span className="text-xs text-muted-foreground font-normal">
+									({sectionJobs.length})
+								</span>
+							</h2>
 
-						<div className="divide-y rounded-lg border bg-card">
-							{sectionJobs.map((job) => (
-								<JobCard
-									key={job.id}
-									job={job}
-									isExpanded={expandedJob === job.id}
-									activeEmailId={activeEmailId}
-									selectedEmail={selectedEmail}
-									fetchingEmail={fetchingEmail}
-									onToggle={() => {
-										onToggleExpand(job.id);
-										requestAnimationFrame(() => {
-											document.getElementById(job.id)?.scrollIntoView({
-												behavior: "smooth",
-												block: "center",
+							<div className="divide-y rounded-lg border bg-card">
+								{sectionJobs.map((job) => (
+									<JobCard
+										key={job.id}
+										job={job}
+										isExpanded={expandedJob === job.id}
+										activeEmailId={activeEmailId}
+										selectedEmail={selectedEmail}
+										fetchingEmail={fetchingEmail}
+										onToggle={() => {
+											onToggleExpand(job.id);
+											requestAnimationFrame(() => {
+												document.getElementById(job.id)?.scrollIntoView({
+													behavior: "smooth",
+													block: "center",
+												});
 											});
+										}}
+										onSelectEmail={onSelectEmail}
+										onStatusUpdate={onStatusUpdate}
+										onDeleteHistoryEntry={onDeleteHistoryEntry}
+										onDelete={onDelete}
+										onUpdateTitle={onUpdateTitle}
+										onMergeWith={onMergeWith}
+									/>
+								))}
+							</div>
+						</section>
+					);
+				})
+			) : (
+				/* Flat list, sorted by date desc (already sorted in filter) */
+				<div className="divide-y rounded-lg border bg-card">
+					{jobs.map((job) => {
+						return (
+							<JobCard
+								key={job.id}
+								job={job}
+								isExpanded={expandedJob === job.id}
+								activeEmailId={activeEmailId}
+								selectedEmail={selectedEmail}
+								fetchingEmail={fetchingEmail}
+								onToggle={() => {
+									onToggleExpand(job.id);
+									requestAnimationFrame(() => {
+										document.getElementById(job.id)?.scrollIntoView({
+											behavior: "smooth",
+											block: "center",
 										});
-									}}
-									onSelectEmail={onSelectEmail}
-									onStatusUpdate={onStatusUpdate}
-									onDeleteHistoryEntry={onDeleteHistoryEntry}
-									onDelete={onDelete}
-									onUpdateTitle={onUpdateTitle}
-									onMergeWith={onMergeWith}
-								/>
-							))}
-						</div>
-					</section>
-				);
-			})}
+									});
+								}}
+								onSelectEmail={onSelectEmail}
+								onStatusUpdate={onStatusUpdate}
+								onDeleteHistoryEntry={onDeleteHistoryEntry}
+								onDelete={onDelete}
+								onUpdateTitle={onUpdateTitle}
+								onMergeWith={onMergeWith}
+								showStatusBadge
+							/>
+						);
+					})}
+				</div>
+			)}
 
 			{(lastSyncTime > 0 || newCount > 0) && (
 				<p className="text-xs text-muted-foreground">

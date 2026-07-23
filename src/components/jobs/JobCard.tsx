@@ -40,6 +40,7 @@ interface JobCardProps {
 	onDelete: (jobId: string) => void;
 	onUpdateTitle: (jobId: string, newTitle: string) => void;
 	onMergeWith: (jobId: string) => void;
+	showStatusBadge?: boolean;
 }
 
 export default function JobCard({
@@ -54,7 +55,8 @@ export default function JobCard({
 	onDeleteHistoryEntry,
 	onDelete,
 	onUpdateTitle,
-onMergeWith,
+	onMergeWith,
+	showStatusBadge,
 }: JobCardProps) {
 	const [editingTitle, setEditingTitle] = useState(false);
 	const [titleDraft, setTitleDraft] = useState(job.jobTitle);
@@ -79,7 +81,22 @@ onMergeWith,
 				if (open !== isExpanded) onToggle();
 			}}
 		>
-			<CollapsibleTrigger className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30">
+			<CollapsibleTrigger
+				render={<button type="button" />}
+				className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30"
+			>
+				{showStatusBadge &&
+					(() => {
+						const cfg = STCFG[job.status];
+						const Icon = cfg.icon;
+						return (
+							<span
+								className={`flex items-center justify-center size-7 shrink-0 rounded-full ${cfg.bg} ${cfg.color}`}
+							>
+								<Icon className="size-3.5" />
+							</span>
+						);
+					})()}
 				<div className="min-w-0 flex-1">
 					{editingTitle ? (
 						<div
@@ -215,15 +232,15 @@ onMergeWith,
 								<Pencil data-icon="inline-start" />
 								Edit Title
 							</Button>
-						<Button
+							<Button
 								variant="ghost"
 								size="sm"
 								onClick={() => onMergeWith(job.id)}
-						>
+							>
 								<Merge data-icon="inline-start" />
 								Merge With
-						</Button>
-						<Button
+							</Button>
+							<Button
 								variant="destructive"
 								className={"bg-transparent"}
 								size="sm"
@@ -231,7 +248,7 @@ onMergeWith,
 							>
 								<Trash2 data-icon="inline-start" />
 								Hide Job
-						</Button>
+							</Button>
 						</div>
 					</div>
 
