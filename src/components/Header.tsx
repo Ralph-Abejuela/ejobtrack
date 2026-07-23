@@ -3,6 +3,7 @@ import { useAuth } from "@/lib/auth";
 import { Sun, Moon, LogOut, User, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/lib/use-theme";
+import { defaultJobsSearchData } from "@/routes/jobs";
 
 /** Small Google G icon for header bar. */
 function GoogleG({ className }: { className?: string }) {
@@ -44,6 +45,7 @@ export default function Header() {
 				</Link>
 				<Link
 					to="/jobs"
+					search={defaultJobsSearchData}
 					className="text-sm text-muted-foreground hover:text-foreground"
 				>
 					Jobs

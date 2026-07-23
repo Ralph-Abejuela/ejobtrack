@@ -7,6 +7,7 @@ import {
 	CardDescription,
 } from "@/components/ui/card";
 import { Inbox, ListChecks, GitMerge, Brain, ArrowRight } from "lucide-react";
+import { defaultJobsSearchData } from "./jobs";
 
 export const Route = createFileRoute("/")({
 	component: HeroPage,
@@ -62,7 +63,12 @@ function HeroPage() {
 					{/* CTA */}
 					<Button
 						size="lg"
-						onClick={() => navigate({ to: "/jobs" })}
+						onClick={() =>
+							navigate({
+								to: "/jobs",
+								search: (prev) => ({...defaultJobsSearchData, ...prev}),
+							})
+						}
 						className="gap-2 text-base"
 					>
 						Get started

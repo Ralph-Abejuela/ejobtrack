@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { LogIn } from "lucide-react";
+import { defaultJobsSearchData } from "@/routes/jobs";
 
 /**
  * Shadcn-styled "Get started" button.
@@ -12,7 +13,12 @@ export default function SignInButton() {
 	return (
 		<Button
 			size="lg"
-			onClick={() => navigate({ to: "/jobs" })}
+			onClick={() =>
+				navigate({
+					to: "/jobs",
+					search: (prev) => ({...defaultJobsSearchData, ...prev}),
+				})
+			}
 			className="gap-2 text-base"
 		>
 			<LogIn className="size-5" />
