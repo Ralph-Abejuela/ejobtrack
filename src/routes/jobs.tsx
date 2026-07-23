@@ -213,10 +213,12 @@ function JobsContent() {
 				</div>
 			</div>
 
-			{state.syncing && state.batchTotal > 0 && (
+			{(state.syncing || state.retryInProgress) && state.batchTotal > 0 && (
 				<Progress value={(state.batchProcessed / state.batchTotal) * 100}>
 					<ProgressLabel>
-						Processing {state.batchProcessed} / {state.batchTotal} emails
+						{state.retryInProgress
+							? `Retrying ${state.batchProcessed} / ${state.batchTotal} emails`
+							: `Processing ${state.batchProcessed} / ${state.batchTotal} emails`}
 					</ProgressLabel>
 				</Progress>
 			)}

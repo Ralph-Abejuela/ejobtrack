@@ -25,6 +25,7 @@ import { classifyEmail } from "@/lib/classify-email";
 import type { JobApplication } from "@/lib/jobs/types";
 import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
 import { capture } from "./analytics";
+import { logger } from "./logger";
 import { storeEmails } from "@/lib/email-cache";
 
 const PAGE_SIZE = 25;
@@ -44,6 +45,8 @@ interface JobPollerState {
 	batchTotal: number;
 	/** Number of pending retries in the queue */
 	queueSize: number;
+	/** Retry loop is actively processing */
+	retryInProgress: boolean;
 }
 
 /** Epoch ms → YYYY/MM/DD for Gmail search. */
@@ -59,6 +62,8 @@ async function processEmails(
 	ids: string[],
 	onProgress?: (processed: number, total: number) => void,
 ): Promise<{ newJobs: number }> {
+	const rateLimitedIds: string[] = [];
+
 	const results = await Promise.all(
 		ids.map(async (id) => {
 			try {
@@ -66,13 +71,19 @@ async function processEmails(
 				return { type: "success" as const, email };
 			} catch (err) {
 				if (err instanceof RateLimitError) {
-					enqueue(userEmail, id, err.message);
+					rateLimitedIds.push(id);
 					return { type: "rate_limited" as const };
 				}
 				return { type: "error" as const };
 			}
 		}),
 	);
+
+	// Enqueue serially to avoid localStorage write races
+	for (const id of rateLimitedIds) {
+		logger.log("retry", `${id} rate-limited, queued`);
+		enqueue(userEmail, id, "rate limited");
+	}
 
 	const emails = results
 		.filter((r) => r.type === "success")
@@ -93,7 +104,7 @@ async function processEmails(
 	for (let i = 0; i < total; i++) {
 		const email = emails[i];
 		onProgress?.(i + 1, total);
-		if (import.meta.env.DEV) console.log(email);
+		logger.log("poller", email);
 		if (await isScanned(userEmail, email.id)) continue;
 		scannedIds.push(email.id);
 
@@ -237,6 +248,7 @@ export function useJobPoller() {
 		batchProcessed: 0,
 		batchTotal: 0,
 		queueSize: 0,
+		retryInProgress: false,
 	});
 
 	const pollingRef = useRef(false);
@@ -287,6 +299,7 @@ export function useJobPoller() {
 		setState((s) => ({ ...s, syncing: true, syncError: null }));
 
 		try {
+			// Single page on initial sync — rest fetched progressively via loadMore
 			const listRes = await listMessages(accessToken, {
 				maxResults: PAGE_SIZE,
 			});
@@ -303,10 +316,9 @@ export function useJobPoller() {
 					})),
 			);
 
-			// Store boundaries
+			// Store page token for progressive loadMore
 			await setCrawlState(userEmail, {
-				newestTs: 0,
-				oldestTs: 0,
+				nextPageToken: listRes.nextPageToken ?? null,
 			});
 
 			let oldestTs: number | null = null;
@@ -387,9 +399,10 @@ export function useJobPoller() {
 		setState((s) => ({ ...s, syncing: true, syncError: null }));
 
 		try {
+			// +1 day buffer so same-day emails after newestTs aren't missed
 			const listRes = await listMessages(accessToken, {
 				maxResults: PAGE_SIZE,
-				q: `after:${tsToGmailDate(crawl.newestTs)}`,
+				q: `after:${tsToGmailDate(crawl.newestTs - 86400000)}`,
 			});
 
 			const ids = listRes.messages.map((m) => m.id);
@@ -462,15 +475,16 @@ export function useJobPoller() {
 		if (!accessToken || !userEmail || pollingRef.current) return;
 
 		const crawl = await getCrawlState(userEmail);
-		if (!crawl?.oldestTs) return;
+		if (!crawl?.nextPageToken) return;
 
 		pollingRef.current = true;
 		setState((s) => ({ ...s, syncing: true, syncError: null }));
 
 		try {
+			// Use nextPageToken from previous list to get the next page — no date query needed
 			const listRes = await listMessages(accessToken, {
 				maxResults: PAGE_SIZE,
-				q: `before:${tsToGmailDate(crawl.oldestTs)}`,
+				pageToken: crawl.nextPageToken,
 			});
 
 			const ids = listRes.messages.map((m) => m.id);
@@ -485,6 +499,11 @@ export function useJobPoller() {
 						batchTotal: total,
 					})),
 			);
+
+			// Store next page token for subsequent loadMore calls
+			await setCrawlState(userEmail, {
+				nextPageToken: listRes.nextPageToken ?? null,
+			});
 
 			if (ids.length > 0) {
 				const full = await Promise.all(
@@ -505,7 +524,7 @@ export function useJobPoller() {
 						...valid.map((e) => Number(e.internalDate)),
 					);
 					await setCrawlState(userEmail, {
-						oldestTs: Math.min(crawl.oldestTs, oldestBatch),
+						oldestTs: Math.min(crawl.oldestTs ?? Infinity, oldestBatch),
 					});
 				}
 			}
@@ -573,7 +592,25 @@ export function useJobPoller() {
 	}, [accessToken, userEmail, checkNewEmails]);
 
 	// Retry loop — background processor for rate-limited message fetches
-	useRetryLoop(accessToken, userEmail, loadJobs);
+	useRetryLoop(accessToken, userEmail, {
+		onProgress: (processed, total) =>
+			setState((s) => ({
+				...s,
+				batchProcessed: processed,
+				batchTotal: total,
+				retryInProgress: true,
+			})),
+		onDone: () => {
+			loadJobs();
+			loadScanStats();
+			setState((s) => ({
+				...s,
+				batchProcessed: 0,
+				batchTotal: 0,
+				retryInProgress: false,
+			}));
+		},
+	});
 
 	// Clear retry queue on sign-out
 	useEffect(() => {
@@ -603,6 +640,7 @@ interface CrawlState {
 	userEmail: string;
 	newestTs: number | null;
 	oldestTs: number | null;
+	nextPageToken: string | null;
 	totalJobs: number;
 	totalEstimate: number;
 }
@@ -618,6 +656,7 @@ function getCrawlState(userEmail: string): CrawlState {
 		userEmail,
 		newestTs: null,
 		oldestTs: null,
+		nextPageToken: null,
 		totalJobs: 0,
 		totalEstimate: 0,
 	};
@@ -626,7 +665,10 @@ function getCrawlState(userEmail: string): CrawlState {
 function setCrawlState(
 	userEmail: string,
 	partial: Partial<
-		Pick<CrawlState, "newestTs" | "oldestTs" | "totalJobs" | "totalEstimate">
+		Pick<
+			CrawlState,
+			"newestTs" | "oldestTs" | "nextPageToken" | "totalJobs" | "totalEstimate"
+		>
 	>,
 ): void {
 	const existing = getCrawlState(userEmail);
