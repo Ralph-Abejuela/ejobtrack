@@ -124,7 +124,7 @@ function JobsContent() {
 		showDuplicates,
 		setShowDuplicates,
 		activeEmailId,
-		setActiveEmailId,
+		handleSelectEmail,
 		selectedEmail,
 		fetchingEmail,
 		handleDismiss,
@@ -167,10 +167,10 @@ function JobsContent() {
 			} else {
 				setExpandedJob(jobId);
 				const newJob = jobs.find((j) => j.id === jobId);
-				if (newJob) setActiveEmailId(newJob.emailId);
+				if (newJob) handleSelectEmail(newJob.emailId);
 			}
 		},
-		[expandedJob, setExpandedJob, jobs, setActiveEmailId],
+		[expandedJob, setExpandedJob, jobs, handleSelectEmail],
 	);
 
 	if (!loaded) return <JobsPageSkeleton />;
@@ -281,7 +281,7 @@ function JobsContent() {
 				selectedEmail={selectedEmail}
 				fetchingEmail={fetchingEmail}
 				onToggleExpand={handleToggleExpand}
-				onSelectEmail={setActiveEmailId}
+				onSelectEmail={handleSelectEmail}
 				onStatusUpdate={handleStatusUpdate}
 				onDeleteHistoryEntry={handleDeleteHistoryEntry}
 				onDelete={handleDeleteJob}

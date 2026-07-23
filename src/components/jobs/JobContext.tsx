@@ -86,6 +86,7 @@ interface JobContextValue {
 	// Timeline email
 	activeEmailId: string | null;
 	setActiveEmailId: (id: string | null) => void;
+	handleSelectEmail: (id: string | null) => Promise<void>;
 	selectedEmail: SelectedEmail | null;
 	fetchingEmail: boolean;
 
@@ -124,6 +125,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		null,
 	);
 	const [fetchingEmail, setFetchingEmail] = useState(false);
+	const lastFetchRef = useRef<string | null>(null);
 
 	// ── Reset all user-scoped state when account changes ──
 	const prevEmailRef = useRef<string | null>(null);
@@ -285,28 +287,34 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		}
 	}, [user?.email]);
 
-	useEffect(() => {
-		if (activeEmailId === "manual") {
-			Promise.resolve().then(() => {
-				setSelectedEmail({ subject: "—", from: "—", body: "Set by user" });
+	const handleSelectEmail = useCallback(
+		async (emailId: string | null) => {
+			setActiveEmailId(emailId);
+			lastFetchRef.current = emailId;
+
+			if (emailId === "manual") {
+				setSelectedEmail({
+					subject: "—",
+					from: "—",
+					body: "Set by user",
+				});
 				setFetchingEmail(false);
-			});
-			return;
-		}
-		if (!activeEmailId || !accessToken) {
-			setSelectedEmail(null);
-			setFetchingEmail(false);
-			return;
-		}
+				return;
+			}
 
-		let cancelled = false;
-		setFetchingEmail(true);
+			if (!emailId || !accessToken) {
+				setSelectedEmail(null);
+				setFetchingEmail(false);
+				return;
+			}
 
-		(async () => {
-			// 1. Try cache first
-			if (!cancelled) {
-				const cached = await emailDb.emails.get(activeEmailId);
-				if (!cancelled && cached) {
+			setFetchingEmail(true);
+
+			try {
+				// 1. Try cache first
+				const cached = await emailDb.emails.get(emailId);
+				if (lastFetchRef.current !== emailId) return; // stale
+				if (cached) {
 					setSelectedEmail({
 						subject: cached.subject,
 						from: cached.from,
@@ -315,12 +323,10 @@ export function JobProvider({ children }: { children: ReactNode }) {
 					setFetchingEmail(false);
 					return;
 				}
-			}
 
-			// 2. Cache miss — fetch from Gmail API
-			try {
-				const msg = await getMessage(accessToken, activeEmailId);
-				if (cancelled) return;
+				// 2. Cache miss — fetch from Gmail API
+				const msg = await getMessage(accessToken, emailId);
+				if (lastFetchRef.current !== emailId) return;
 				const parsed = parseMessage(msg);
 				const data: SelectedEmail = {
 					subject: parsed.subject,
@@ -329,20 +335,20 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				};
 				// 3. Cache for future loads
 				storeEmails(user!.email, [parsed]);
-				if (cancelled) return;
+				if (lastFetchRef.current !== emailId) return;
 				setSelectedEmail(data);
 			} catch {
-				if (cancelled) return;
-				setSelectedEmail(null);
+				if (lastFetchRef.current === emailId) {
+					setSelectedEmail(null);
+				}
 			} finally {
-				if (!cancelled) setFetchingEmail(false);
+				if (lastFetchRef.current === emailId) {
+					setFetchingEmail(false);
+				}
 			}
-		})();
-
-		return () => {
-			cancelled = true;
-		};
-	}, [activeEmailId, accessToken, user?.email]);
+		},
+		[accessToken, user?.email],
+	);
 
 	// ── Derived ──
 	const grouped = useMemo(() => {
@@ -488,6 +494,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				handleRestore,
 				activeEmailId,
 				setActiveEmailId,
+				handleSelectEmail,
 				selectedEmail,
 				fetchingEmail,
 				handleDeleteHistoryEntry,
