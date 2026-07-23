@@ -6,7 +6,7 @@ import {
 	parseMessage,
 	RateLimitError,
 } from "@/lib/gmail";
-import { parseEmail } from "@/lib/jobs/registry";
+import { parseEmail, parseEmailPlatform } from "@/lib/jobs/registry";
 import {
 	getAllJobs,
 	getStatusCounts,
@@ -97,14 +97,19 @@ async function processEmails(
 		if (await isScanned(userEmail, email.id)) continue;
 		scannedIds.push(email.id);
 
-		// Semantic check — blocks newsletters and non-job emails
-		const isJob = await classifyEmail(email.subject, email.body);
-		if (isJob === false) {
-			await markScanned(userEmail, [email.id]);
-			continue;
-		}
+		// 1. Try platform-specific parsers (known job senders) first
+		let results = parseEmailPlatform(email);
 
-		const results = parseEmail(email);
+		// 2. No platform match — use ML to decide if this is a job email
+		if (!results) {
+			const isJob = await classifyEmail(email.subject, email.body);
+			if (isJob === false) {
+				await markScanned(userEmail, [email.id]);
+				continue;
+			}
+			// ML says it's a job — use generic/fallback parser
+			results = parseEmail(email);
+		}
 		if (!results) continue;
 
 		const existing = await getAllJobs(userEmail);

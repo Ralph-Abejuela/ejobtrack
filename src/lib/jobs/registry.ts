@@ -22,7 +22,7 @@ const IGNORE_SENDERS = [
 	"LinkedIn <messages-noreply@linkedin.com>",
 	"DigitalOcean <team@info.digitalocean.com>",
 	"LinkedIn <editors-noreply@linkedin.com>",
-	".*<invitations@linkedin.com>"
+	".*<invitations@linkedin.com>",
 ];
 
 /** Registry of all platform-specific parsers. Add new parsers here. */
@@ -46,6 +46,52 @@ function findPlatformParser(emailAddr: string): JobPlatformParser | undefined {
 }
 
 /**
+ * Run only platform-specific parsers by known email address.
+ * Returns results if a known sender had job data, null otherwise.
+ * Does NOT fall through to generic parser — use parseEmail for that.
+ */
+export function parseEmailPlatform(email: {
+	from: string;
+	subject: string;
+	snippet: string;
+	body: string;
+	bodyHtml?: string;
+	id: string;
+	internalDate: string;
+}):
+	| Omit<
+			JobApplication,
+			"id" | "userEmail" | "createdAt" | "updatedAt" | "history"
+	  >[]
+	| null {
+	// Skip known non-job senders (full From header match)
+	if (
+		IGNORE_SENDERS.some((s) =>
+			email.from.trim().toLowerCase().match(s.toLowerCase()),
+		)
+	) {
+		return null;
+	}
+
+	const emailAddr = extractEmail(email.from);
+	if (!emailAddr) return null;
+
+	// Try platform-specific parsers only
+	const platformParser = findPlatformParser(emailAddr);
+	if (platformParser) {
+		// Check ignore patterns before parsing
+		const ignoreText = `${email.subject} ${email.snippet}`;
+		if (platformParser.ignorePatterns?.some((p) => p.test(ignoreText))) {
+			return null;
+		}
+		const result = platformParser.parse(email);
+		if (result && result.length > 0) return result;
+	}
+
+	return null;
+}
+
+/**
  * Run platform-specific parsers first, then fall back to generic parser.
  * Returns the first match or null.
  */
@@ -65,8 +111,9 @@ export function parseEmail(email: {
 	| null {
 	// Skip known non-job senders (full From header match)
 	if (
-		IGNORE_SENDERS.some(
-			(s) => email.from.trim().toLowerCase().match(s.toLowerCase()))
+		IGNORE_SENDERS.some((s) =>
+			email.from.trim().toLowerCase().match(s.toLowerCase()),
+		)
 	) {
 		return null;
 	}
