@@ -134,6 +134,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 				client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
 				scope:
 					"openid email profile https://www.googleapis.com/auth/gmail.readonly",
+				error_callback: () => {
+					console.warn("[auth] OAuth popup closed by user");
+					setState((prev) => ({ ...prev, loading: false }));
+					resolve(null);
+				},
 				callback: async (response: google.accounts.oauth2.TokenResponse) => {
 					if (!response.access_token) {
 						console.warn("[auth] OAuth popup cancelled or failed");

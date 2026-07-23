@@ -2,10 +2,17 @@
 // Loaded via <script src="https://accounts.google.com/gsi/client" async>
 
 declare namespace google.accounts.oauth2 {
+	interface GoogleOAuthError {
+		type: string;
+		message: string;
+		stack?: string;
+	}
+
 	interface TokenClientConfig {
 		client_id: string;
 		scope: string;
 		callback: (response: TokenResponse) => void;
+		error_callback?: (error: GoogleOAuthError) => void;
 		include_granted_scopes?: boolean;
 		enable_serial_consent?: boolean;
 		prompt?: string;
