@@ -14,12 +14,7 @@ import {
 	addToDuplicateIndex,
 } from "@/lib/jobs-db";
 import { markScanned, isScanned, getScannedCount } from "@/lib/jobs-cache";
-import {
-	enqueue,
-	markBatchCompleted,
-	clearQueue,
-	getQueueSize,
-} from "@/lib/retry-queue";
+import { enqueue, clearQueue, getQueueSize } from "@/lib/retry-queue";
 import { useRetryLoop } from "@/lib/use-retry-loop";
 import { classifyEmail } from "@/lib/classify-email";
 import type { JobApplication } from "@/lib/jobs/types";
@@ -55,13 +50,18 @@ function tsToGmailDate(ms: number): string {
 	return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
 }
 
-/** Parse a list of Gmail messages for job applications and store results. */
+/** Parse a list of Gmail messages for job applications and store results.
+ *  Returns new job count plus date boundaries of fetched emails. */
 async function processEmails(
 	accessToken: string,
 	userEmail: string,
 	ids: string[],
 	onProgress?: (processed: number, total: number) => void,
-): Promise<{ newJobs: number }> {
+): Promise<{
+	newJobs: number;
+	oldestTs: number | null;
+	newestTs: number | null;
+}> {
 	const rateLimitedIds: string[] = [];
 
 	const results = await Promise.all(
@@ -88,6 +88,19 @@ async function processEmails(
 	const emails = results
 		.filter((r) => r.type === "success")
 		.map((r) => r.email);
+
+	// Compute date boundaries from fetched emails (eliminates double-fetch in callers)
+	let oldestTs: number | null = null;
+	let newestTs: number | null = null;
+	if (emails.length > 0) {
+		const ts = emails
+			.map((e) => Number(e.internalDate))
+			.filter((t) => !isNaN(t));
+		if (ts.length > 0) {
+			oldestTs = Math.min(...ts);
+			newestTs = Math.max(...ts);
+		}
+	}
 
 	// Cache fetched emails so timeline viewer doesn't re-fetch
 	await storeEmails(userEmail, emails);
@@ -228,7 +241,7 @@ async function processEmails(
 		new_jobs: newJobs,
 	});
 
-	return { newJobs };
+	return { newJobs, oldestTs, newestTs };
 }
 
 export function useJobPoller() {
@@ -288,6 +301,32 @@ export function useJobPoller() {
 		loadScanStats();
 	}, [loadJobs, loadScanStats]);
 
+	/** Shared post-batch state reset — loads jobs, refreshes stats, clears syncing. */
+	const finalizeBatch = useCallback(
+		async (
+			userEmail: string,
+			newJobs: number,
+			extraState?: Partial<Pick<JobPollerState, "oldestScanned">>,
+		) => {
+			await loadJobs();
+			const [scannedCount] = await Promise.all([getScannedCount(userEmail)]);
+			const nowMs = Date.now();
+			localStorage.setItem(`job_sync_ms_${userEmail}`, String(nowMs));
+			setState((s) => ({
+				...s,
+				syncing: false,
+				batchProcessed: 0,
+				batchTotal: 0,
+				lastSyncTime: nowMs,
+				newCount: newJobs,
+				scannedCount,
+				queueSize: getQueueSize(userEmail),
+				...extraState,
+			}));
+		},
+		[loadJobs],
+	);
+
 	/**
 	 * Fetch latest 50 emails (initial popup).
 	 * Re-fetches on first call or when oldestTs is null.
@@ -304,7 +343,7 @@ export function useJobPoller() {
 				maxResults: PAGE_SIZE,
 			});
 			const ids = listRes.messages.map((m) => m.id);
-			const { newJobs } = await processEmails(
+			const { newJobs, oldestTs, newestTs } = await processEmails(
 				accessToken,
 				userEmail,
 				ids,
@@ -316,49 +355,13 @@ export function useJobPoller() {
 					})),
 			);
 
-			// Store page token for progressive loadMore
 			await setCrawlState(userEmail, {
+				newestTs,
+				oldestTs,
 				nextPageToken: listRes.nextPageToken ?? null,
 			});
 
-			let oldestTs: number | null = null;
-			if (ids.length > 0) {
-				const full = await Promise.all(
-					ids.map(async (id) => {
-						try {
-							return parseMessage(await getMessage(accessToken, id, "full"));
-						} catch {
-							return null;
-						}
-					}),
-				);
-				const valid = full.filter(
-					(e): e is NonNullable<typeof e> => e !== null,
-				);
-				if (valid.length > 0) {
-					const ts = valid.map((e) => Number(e.internalDate));
-					const newest = Math.max(...ts);
-					oldestTs = Math.min(...ts);
-					await setCrawlState(userEmail, {
-						newestTs: newest,
-						oldestTs: oldestTs,
-					});
-				}
-			}
-
-			await loadJobs();
-			const [scannedCount] = await Promise.all([getScannedCount(userEmail)]);
-			const nowMs = Date.now();
-			localStorage.setItem(`job_sync_ms_${userEmail}`, String(nowMs));
-			setState((s) => ({
-				...s,
-				syncing: false,
-				batchProcessed: 0,
-				batchTotal: 0,
-				lastSyncTime: nowMs,
-				newCount: newJobs,
-				scannedCount,
-				queueSize: getQueueSize(userEmail),
+			await finalizeBatch(userEmail, newJobs, {
 				oldestScanned: oldestTs
 					? new Date(oldestTs).toLocaleDateString("en-US", {
 							month: "short",
@@ -366,8 +369,7 @@ export function useJobPoller() {
 							year: "numeric",
 						})
 					: null,
-			}));
-			markBatchCompleted(userEmail);
+			});
 		} catch (err) {
 			setState((s) => ({
 				...s,
@@ -406,7 +408,7 @@ export function useJobPoller() {
 			});
 
 			const ids = listRes.messages.map((m) => m.id);
-			const { newJobs } = await processEmails(
+			const { newJobs, newestTs } = await processEmails(
 				accessToken,
 				userEmail,
 				ids,
@@ -418,43 +420,14 @@ export function useJobPoller() {
 					})),
 			);
 
-			if (ids.length > 0) {
-				const full = await Promise.all(
-					ids.map(async (id) => {
-						try {
-							return parseMessage(await getMessage(accessToken, id, "full"));
-						} catch {
-							return null;
-						}
-					}),
-				);
-				const valid = full.filter(
-					(e): e is NonNullable<typeof e> => e !== null,
-				);
-				if (valid.length > 0) {
-					const newest = Math.max(...valid.map((e) => Number(e.internalDate)));
-					await setCrawlState(userEmail, {
-						newestTs: Math.max(crawl.newestTs, newest),
-					});
-				}
+			if (newestTs !== null) {
+				await setCrawlState(userEmail, {
+					newestTs: Math.max(crawl.newestTs, newestTs),
+				});
 			}
 
 			localStorage.setItem(`job_forward_ms_${userEmail}`, String(Date.now()));
-			await loadJobs();
-			const scannedCount = await getScannedCount(userEmail);
-			const nowMs = Date.now();
-			localStorage.setItem(`job_sync_ms_${userEmail}`, String(nowMs));
-			setState((s) => ({
-				...s,
-				syncing: false,
-				batchProcessed: 0,
-				batchTotal: 0,
-				lastSyncTime: nowMs,
-				newCount: newJobs,
-				scannedCount,
-				queueSize: getQueueSize(userEmail),
-			}));
-			markBatchCompleted(userEmail);
+			await finalizeBatch(userEmail, newJobs);
 		} catch (err) {
 			setState((s) => ({
 				...s,
@@ -488,7 +461,7 @@ export function useJobPoller() {
 			});
 
 			const ids = listRes.messages.map((m) => m.id);
-			const { newJobs } = await processEmails(
+			const { newJobs, oldestTs } = await processEmails(
 				accessToken,
 				userEmail,
 				ids,
@@ -503,57 +476,21 @@ export function useJobPoller() {
 			// Store next page token for subsequent loadMore calls
 			await setCrawlState(userEmail, {
 				nextPageToken: listRes.nextPageToken ?? null,
+				oldestTs:
+					oldestTs !== null
+						? Math.min(crawl.oldestTs ?? Infinity, oldestTs)
+						: crawl.oldestTs,
 			});
 
-			if (ids.length > 0) {
-				const full = await Promise.all(
-					ids.map(async (id) => {
-						try {
-							return parseMessage(await getMessage(accessToken, id, "full"));
-						} catch {
-							return null;
-						}
-					}),
-				);
-				const valid = full.filter(
-					(e): e is NonNullable<typeof e> => e !== null,
-				);
-
-				if (valid.length > 0) {
-					const oldestBatch = Math.min(
-						...valid.map((e) => Number(e.internalDate)),
-					);
-					await setCrawlState(userEmail, {
-						oldestTs: Math.min(crawl.oldestTs ?? Infinity, oldestBatch),
-					});
-				}
-			}
-
-			await loadJobs();
-			const [scannedCount, updatedCrawl] = await Promise.all([
-				getScannedCount(userEmail),
-				getCrawlState(userEmail),
-			]);
-			const nowMs = Date.now();
-			localStorage.setItem(`job_sync_ms_${userEmail}`, String(nowMs));
-			setState((s) => ({
-				...s,
-				syncing: false,
-				batchProcessed: 0,
-				batchTotal: 0,
-				lastSyncTime: nowMs,
-				newCount: newJobs,
-				scannedCount,
-				queueSize: getQueueSize(userEmail),
-				oldestScanned: updatedCrawl.oldestTs
-					? new Date(updatedCrawl.oldestTs).toLocaleDateString("en-US", {
+			await finalizeBatch(userEmail, newJobs, {
+				oldestScanned: oldestTs
+					? new Date(crawl.oldestTs ?? oldestTs).toLocaleDateString("en-US", {
 							month: "short",
 							day: "numeric",
 							year: "numeric",
 						})
 					: null,
-			}));
-			markBatchCompleted(userEmail);
+			});
 		} catch (err) {
 			setState((s) => ({
 				...s,

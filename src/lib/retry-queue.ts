@@ -2,8 +2,6 @@
 // Persisted in localStorage per user. Message-level granularity — only
 // getMessage() failures go in here. The retry loop runs in a separate hook.
 
-const COOLDOWN_MS = 120_000; // 2 minutes
-
 /** Backoff intervals by retry index (0-based). */
 const BACKOFF_MS = [30_000, 120_000, 600_000]; // 30s, 2min, 10min
 const EXTENDED_BACKOFF_MS = 1_800_000; // 30min after 3+ retries
@@ -23,10 +21,6 @@ export interface RetryEntry {
 
 function queueKey(userEmail: string): string {
 	return `gmail_retry_queue_${userEmail}`;
-}
-
-function cooldownKey(userEmail: string): string {
-	return `gmail_batch_last_ms_${userEmail}`;
 }
 
 // ── Queue read / write ────────────────────────────────────────────────────
@@ -136,19 +130,4 @@ export function clearAllQueues(): void {
 		k.startsWith("gmail_retry_queue_"),
 	);
 	for (const key of keys) localStorage.removeItem(key);
-}
-
-// ── Batch cooldown tracking ──────────────────────────────────────────────
-// Prevents retry loop from running right after a main poller batch, which
-// would double-dip into Gmail rate limits.
-
-/** Record that a main poller batch just finished. */
-export function markBatchCompleted(userEmail: string): void {
-	localStorage.setItem(cooldownKey(userEmail), String(Date.now()));
-}
-
-/** Check if we're still in the cooldown window after a batch. */
-export function isInCooldown(userEmail: string): boolean {
-	const lastBatch = Number(localStorage.getItem(cooldownKey(userEmail)) ?? "0");
-	return Date.now() - lastBatch < COOLDOWN_MS;
 }
