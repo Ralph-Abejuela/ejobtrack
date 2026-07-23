@@ -66,7 +66,7 @@ async function processEmails(
 				return { type: "success" as const, email };
 			} catch (err) {
 				if (err instanceof RateLimitError) {
-					enqueue(id, err.message);
+					enqueue(userEmail, id, err.message);
 					return { type: "rate_limited" as const };
 				}
 				return { type: "error" as const };
@@ -94,7 +94,7 @@ async function processEmails(
 		const email = emails[i];
 		onProgress?.(i + 1, total);
 		if (import.meta.env.DEV) console.log(email);
-		if (await isScanned(email.id)) continue;
+		if (await isScanned(userEmail, email.id)) continue;
 		scannedIds.push(email.id);
 
 		// Semantic check — blocks newsletters and non-job emails
@@ -174,7 +174,10 @@ async function processEmails(
 				dup.updatedAt = Date.now();
 				await storeJob(dup);
 				// Ensure duplicate index has this job
-				await addToDuplicateIndex({ id: dup.id, jobTitle: dup.jobTitle });
+				await addToDuplicateIndex(userEmail, {
+					id: dup.id,
+					jobTitle: dup.jobTitle,
+				});
 			} else {
 				const newJob = {
 					...result,
@@ -191,7 +194,10 @@ async function processEmails(
 					],
 				};
 				await storeJob(newJob);
-				await addToDuplicateIndex({ id: newJob.id, jobTitle: newJob.jobTitle });
+				await addToDuplicateIndex(userEmail, {
+					id: newJob.id,
+					jobTitle: newJob.jobTitle,
+				});
 				newJobs++;
 			}
 		}
@@ -229,6 +235,10 @@ export function useJobPoller() {
 	});
 
 	const pollingRef = useRef(false);
+	const lastEmailRef = useRef<string | null>(null);
+
+	// Keep ref in sync so sign-out cleanup can access the last email
+	lastEmailRef.current = userEmail;
 
 	const loadJobs = useCallback(async () => {
 		if (!userEmail) return;
@@ -331,7 +341,7 @@ export function useJobPoller() {
 				lastSyncTime: nowMs,
 				newCount: newJobs,
 				scannedCount,
-				queueSize: getQueueSize(),
+				queueSize: getQueueSize(userEmail),
 				oldestScanned: oldestTs
 					? new Date(oldestTs).toLocaleDateString("en-US", {
 							month: "short",
@@ -340,12 +350,12 @@ export function useJobPoller() {
 						})
 					: null,
 			}));
-			markBatchCompleted();
+			markBatchCompleted(userEmail);
 		} catch (err) {
 			setState((s) => ({
 				...s,
 				syncing: false,
-				queueSize: getQueueSize(),
+				queueSize: getQueueSize(userEmail),
 				syncError: err instanceof Error ? err.message : "Sync failed",
 			}));
 		} finally {
@@ -424,14 +434,14 @@ export function useJobPoller() {
 				lastSyncTime: nowMs,
 				newCount: newJobs,
 				scannedCount,
-				queueSize: getQueueSize(),
+				queueSize: getQueueSize(userEmail),
 			}));
-			markBatchCompleted();
+			markBatchCompleted(userEmail);
 		} catch (err) {
 			setState((s) => ({
 				...s,
 				syncing: false,
-				queueSize: getQueueSize(),
+				queueSize: getQueueSize(userEmail),
 				syncError:
 					err instanceof Error ? err.message : "New email check failed",
 			}));
@@ -510,7 +520,7 @@ export function useJobPoller() {
 				lastSyncTime: nowMs,
 				newCount: newJobs,
 				scannedCount,
-				queueSize: getQueueSize(),
+				queueSize: getQueueSize(userEmail),
 				oldestScanned: updatedCrawl.oldestTs
 					? new Date(updatedCrawl.oldestTs).toLocaleDateString("en-US", {
 							month: "short",
@@ -519,12 +529,12 @@ export function useJobPoller() {
 						})
 					: null,
 			}));
-			markBatchCompleted();
+			markBatchCompleted(userEmail);
 		} catch (err) {
 			setState((s) => ({
 				...s,
 				syncing: false,
-				queueSize: getQueueSize(),
+				queueSize: getQueueSize(userEmail),
 				syncError: err instanceof Error ? err.message : "Load more failed",
 			}));
 		} finally {
@@ -562,8 +572,8 @@ export function useJobPoller() {
 
 	// Clear retry queue on sign-out
 	useEffect(() => {
-		if (!userEmail) {
-			clearQueue();
+		if (!userEmail && lastEmailRef.current) {
+			clearQueue(lastEmailRef.current);
 		}
 	}, [userEmail]);
 

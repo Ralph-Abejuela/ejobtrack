@@ -35,9 +35,9 @@ export function useRetryLoop(
 		if (processingRef.current) return;
 
 		// Respect cooldown after main poller batch
-		if (isInCooldown()) return;
+		if (isInCooldown(userEmail)) return;
 
-		const pending = getPendingEntries();
+		const pending = getPendingEntries(userEmail);
 		if (pending.length === 0) return;
 
 		processingRef.current = true;
@@ -54,8 +54,8 @@ export function useRetryLoop(
 					// Cache so timeline viewer doesn't re-fetch
 					await storeEmails(userEmail, [email]);
 
-					if (await isScanned(email.id)) {
-						removeEntry(entry.emailId);
+					if (await isScanned(userEmail, email.id)) {
+						removeEntry(userEmail, entry.emailId);
 						continue;
 					}
 
@@ -63,14 +63,14 @@ export function useRetryLoop(
 					const isJob = await classifyEmail(email.subject, email.body);
 					if (isJob === false) {
 						await markScanned(userEmail, [email.id]);
-						removeEntry(entry.emailId);
+						removeEntry(userEmail, entry.emailId);
 						continue;
 					}
 
 					const results = parseEmail(email);
 					if (!results) {
 						await markScanned(userEmail, [email.id]);
-						removeEntry(entry.emailId);
+						removeEntry(userEmail, entry.emailId);
 						continue;
 					}
 
@@ -135,7 +135,10 @@ export function useRetryLoop(
 
 							dup.updatedAt = Date.now();
 							await storeJob(dup);
-							await addToDuplicateIndex({ id: dup.id, jobTitle: dup.jobTitle });
+							await addToDuplicateIndex(userEmail, {
+								id: dup.id,
+								jobTitle: dup.jobTitle,
+							});
 						} else {
 							const newJob: JobApplication = {
 								...result,
@@ -152,7 +155,7 @@ export function useRetryLoop(
 								],
 							} as JobApplication;
 							await storeJob(newJob);
-							await addToDuplicateIndex({
+							await addToDuplicateIndex(userEmail, {
 								id: newJob.id,
 								jobTitle: newJob.jobTitle,
 							});
@@ -160,7 +163,7 @@ export function useRetryLoop(
 					}
 
 					await markScanned(userEmail, [email.id]);
-					removeEntry(entry.emailId);
+					removeEntry(userEmail, entry.emailId);
 					changed = true;
 
 					await capture("retry_success", {
@@ -170,10 +173,10 @@ export function useRetryLoop(
 					});
 				} catch (err) {
 					if (err instanceof RateLimitError) {
-						bumpRetry(entry.emailId, err.message);
+						bumpRetry(userEmail, entry.emailId, err.message);
 					} else {
 						// Non-retriable error — give up
-						removeEntry(entry.emailId);
+						removeEntry(userEmail, entry.emailId);
 					}
 				}
 			}

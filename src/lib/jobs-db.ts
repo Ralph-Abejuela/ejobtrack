@@ -2,7 +2,9 @@ import Dexie, { type EntityTable } from "dexie";
 import { JobStatus, type JobApplication } from "@/lib/jobs/types";
 
 interface DupIndexEntry {
+	/** Primary key: `${userEmail}:${normalizedTitle}` */
 	title: string;
+	userEmail: string;
 	jobIds: string[];
 }
 
@@ -20,6 +22,16 @@ db.version(3).stores({
 	jobs: "id, userEmail, platform, status, company, jobTitle, date, createdAt, updatedAt, [platform+status], [userEmail+status], [userEmail+deleted]",
 	dupIndex: "&title",
 });
+
+db.version(4)
+	.stores({
+		jobs: "id, userEmail, platform, status, company, jobTitle, date, createdAt, updatedAt, [platform+status], [userEmail+status], [userEmail+deleted]",
+		dupIndex: "&title, userEmail",
+	})
+	.upgrade(async (tx) => {
+		// Old dupIndex has bare titles without userEmail prefix — clear, will rebuild
+		await tx.table("dupIndex").clear();
+	});
 
 export { db };
 
@@ -118,7 +130,7 @@ export async function softDeleteJob(
 		await db.jobs.put({ ...job, deleted: true, updatedAt: Date.now() });
 	});
 	// Remove from duplicate index
-	await removeFromDuplicateIndex(job.id, job.jobTitle);
+	await removeFromDuplicateIndex(userEmail, job.id, job.jobTitle);
 
 	return true;
 }
@@ -138,7 +150,7 @@ export async function updateJobTitle(
 		await db.jobs.put({ ...job, jobTitle: newTitle, updatedAt: Date.now() });
 	});
 	// Move in duplicate index
-	await moveInDuplicateIndex(job.id, oldTitle, newTitle);
+	await moveInDuplicateIndex(userEmail, job.id, oldTitle, newTitle);
 
 	return true;
 }
@@ -179,7 +191,7 @@ export async function restoreDeletedJob(
 		await db.jobs.put(restored);
 	});
 	// Re-add to duplicate index
-	await addToDuplicateIndex({ id: job.id, jobTitle: job.jobTitle });
+	await addToDuplicateIndex(userEmail, { id: job.id, jobTitle: job.jobTitle });
 
 	return true;
 }
@@ -192,8 +204,12 @@ export async function clearUserJobs(userEmail: string): Promise<void> {
 
 // ── Resolution history / Undo ──────────────────────────────────────────
 
-const RESOLUTION_KEY = "resolution_history";
-const REMOVED_PREFIX = "removed_job_";
+function resolutionKey(email: string): string {
+	return `resolution_history_${email}`;
+}
+function removedPrefix(email: string): string {
+	return `removed_job_${email}_`;
+}
 const MAX_RESOLUTIONS = 20;
 
 export interface ResolutionEntry {
@@ -204,9 +220,9 @@ export interface ResolutionEntry {
 	removeId?: string;
 }
 
-function getResolutions(): ResolutionEntry[] {
+function getResolutions(userEmail: string): ResolutionEntry[] {
 	try {
-		const raw = localStorage.getItem(RESOLUTION_KEY);
+		const raw = localStorage.getItem(resolutionKey(userEmail));
 		return raw ? JSON.parse(raw) : [];
 	} catch {
 		console.warn("[jobs-db] Failed to read resolutions");
@@ -214,8 +230,8 @@ function getResolutions(): ResolutionEntry[] {
 	}
 }
 
-function saveResolution(entry: ResolutionEntry): void {
-	const all = getResolutions();
+function saveResolution(userEmail: string, entry: ResolutionEntry): void {
+	const all = getResolutions(userEmail);
 	all.unshift(entry);
 	// Cap at MAX_RESOLUTIONS
 	if (all.length > MAX_RESOLUTIONS) {
@@ -223,31 +239,31 @@ function saveResolution(entry: ResolutionEntry): void {
 		// Clean up old snapshot data
 		for (const r of removed) {
 			if (r.action === "merge") {
-				localStorage.removeItem(`${REMOVED_PREFIX}${r.timestamp}`);
+				localStorage.removeItem(`${removedPrefix(userEmail)}${r.timestamp}`);
 			}
 		}
 	}
-	localStorage.setItem(RESOLUTION_KEY, JSON.stringify(all));
+	localStorage.setItem(resolutionKey(userEmail), JSON.stringify(all));
 }
 
-function clearResolutionSnapshots(): void {
-	const all = getResolutions();
+function clearResolutionSnapshots(userEmail: string): void {
+	const all = getResolutions(userEmail);
 	for (const r of all) {
 		if (r.action === "merge" || r.action === "merge-undo") {
-			localStorage.removeItem(`${REMOVED_PREFIX}${r.timestamp}`);
+			localStorage.removeItem(`${removedPrefix(userEmail)}${r.timestamp}`);
 		}
 	}
-	localStorage.removeItem(RESOLUTION_KEY);
+	localStorage.removeItem(resolutionKey(userEmail));
 }
 
 /** Get past resolution actions for the user. */
-export function getResolutionHistory(): ResolutionEntry[] {
-	return getResolutions();
+export function getResolutionHistory(userEmail: string): ResolutionEntry[] {
+	return getResolutions(userEmail);
 }
 
 /** Dismiss all resolution history. */
-export function clearResolutionHistory(): void {
-	clearResolutionSnapshots();
+export function clearResolutionHistory(userEmail: string): void {
+	clearResolutionSnapshots(userEmail);
 }
 
 /** Dismissal map: groupKey → job count at time of dismissal. */
@@ -255,47 +271,31 @@ export interface DismissalMap {
 	[groupKey: string]: number;
 }
 
-function readDismissals(): DismissalMap {
-	try {
-		const raw = localStorage.getItem("dismissed_dup_groups");
-		if (!raw) return {};
-		const parsed = JSON.parse(raw);
-		// Support both old Set-array and new Record formats
-		return Array.isArray(parsed)
-			? Object.fromEntries(parsed.map((k: string) => [k, -1]))
-			: parsed;
-	} catch {
-		console.warn("[jobs-db] Failed to read dismissed groups");
-		return {};
-	}
-}
-
-function writeDismissals(map: DismissalMap): void {
-	localStorage.setItem("dismissed_dup_groups", JSON.stringify(map));
-}
-
-/** Re-dismiss a group that was undo-unignored. */
-export function reDismissGroup(groupKey: string): void {
-	const map = readDismissals();
-	map[groupKey] = -1;
-	writeDismissals(map);
-}
-
 /** Remove a group from the dismissed set (undo ignore). */
 export function unIgnoreGroup(groupKey: string): void {
-	const map = readDismissals();
-	delete map[groupKey];
-	writeDismissals(map);
+	try {
+		const raw = localStorage.getItem("dismissed_dup_groups");
+		if (!raw) return;
+		const parsed = JSON.parse(raw);
+		const map = Array.isArray(parsed)
+			? Object.fromEntries(parsed.map((k: string) => [k, -1]))
+			: parsed;
+		delete map[groupKey];
+		localStorage.setItem("dismissed_dup_groups", JSON.stringify(map));
+	} catch {
+		console.warn("[jobs-db] Failed to un-ignore group");
+	}
 }
 
 /**
  * Check if a group was dismissed with fewer jobs than it has now.
  * Returns the updated DismissalMap if auto-un-ignore should happen.
+ * Does NOT touch localStorage — caller manages persistence.
  */
 export function pruneStaleDismissals(
+	map: DismissalMap,
 	groups: { groupKey: string; count: number }[],
 ): DismissalMap {
-	const map = readDismissals();
 	let changed = false;
 	for (const g of groups) {
 		if (map[g.groupKey] !== undefined && map[g.groupKey] < g.count) {
@@ -303,8 +303,7 @@ export function pruneStaleDismissals(
 			changed = true;
 		}
 	}
-	if (changed) writeDismissals(map);
-	return map;
+	return changed ? { ...map } : map;
 }
 
 /** Group of records that are likely the same job with slightly different names. */
@@ -333,26 +332,28 @@ export async function buildDuplicateIndex(userEmail: string): Promise<void> {
 		groups.set(key, arr);
 	}
 
-	await db.dupIndex.clear();
+	// Only delete entries for this user (key prefixed with userEmail)
+	await db.dupIndex.where({ userEmail }).delete();
 	for (const [title, jobIds] of groups) {
-		await db.dupIndex.put({ title, jobIds });
+		const scopedTitle = `${userEmail}:${title}`;
+		await db.dupIndex.put({ title: scopedTitle, userEmail, jobIds });
 	}
 }
 
-/** Check if dupIndex has data — if not, build it. */
+/** Check if dupIndex has data for this user — if not, build it. */
 export async function ensureDuplicateIndex(userEmail: string): Promise<void> {
-	const count = await db.dupIndex.count();
+	const count = await db.dupIndex.where({ userEmail }).count();
 	if (count === 0) {
 		await buildDuplicateIndex(userEmail);
 	}
 }
 
 /** Add (or update) a job's entry in the dupIndex. */
-export async function addToDuplicateIndex(job: {
-	id: string;
-	jobTitle: string;
-}): Promise<void> {
-	const title = normalizeTitle(job.jobTitle);
+export async function addToDuplicateIndex(
+	userEmail: string,
+	job: { id: string; jobTitle: string },
+): Promise<void> {
+	const title = `${userEmail}:${normalizeTitle(job.jobTitle)}`;
 	const existing = await db.dupIndex.get(title);
 	if (existing) {
 		if (!existing.jobIds.includes(job.id)) {
@@ -360,16 +361,17 @@ export async function addToDuplicateIndex(job: {
 			await db.dupIndex.put(existing);
 		}
 	} else {
-		await db.dupIndex.put({ title, jobIds: [job.id] });
+		await db.dupIndex.put({ title, userEmail, jobIds: [job.id] });
 	}
 }
 
 /** Remove a job id from the dupIndex, cleaning up empty entries. */
 export async function removeFromDuplicateIndex(
+	userEmail: string,
 	jobId: string,
 	jobTitle: string,
 ): Promise<void> {
-	const title = normalizeTitle(jobTitle);
+	const title = `${userEmail}:${normalizeTitle(jobTitle)}`;
 	const existing = await db.dupIndex.get(title);
 	if (!existing) return;
 	existing.jobIds = existing.jobIds.filter((id) => id !== jobId);
@@ -382,21 +384,24 @@ export async function removeFromDuplicateIndex(
 
 /** Move a job from one title group to another (e.g. after edit). */
 export async function moveInDuplicateIndex(
+	userEmail: string,
 	jobId: string,
 	oldTitle: string,
 	newTitle: string,
 ): Promise<void> {
 	if (normalizeTitle(oldTitle) === normalizeTitle(newTitle)) return;
-	await removeFromDuplicateIndex(jobId, oldTitle);
-	await addToDuplicateIndex({ id: jobId, jobTitle: newTitle });
+	await removeFromDuplicateIndex(userEmail, jobId, oldTitle);
+	await addToDuplicateIndex(userEmail, { id: jobId, jobTitle: newTitle });
 }
 
 /**
  * Get all duplicate groups using the incremental index.
  * Only fetches full job data for groups with ≥2 entries.
  */
-export async function getDuplicateGroups(): Promise<DuplicateGroup[]> {
-	const entries = await db.dupIndex.toArray();
+export async function getDuplicateGroups(
+	userEmail: string,
+): Promise<DuplicateGroup[]> {
+	const entries = await db.dupIndex.where({ userEmail }).toArray();
 	const groups = entries.filter((e) => e.jobIds.length >= 2);
 
 	const allIds = groups.flatMap((g) => g.jobIds);
@@ -471,8 +476,8 @@ export async function mergeJobs(
 	});
 
 	// Update duplicate index
-	await removeFromDuplicateIndex(removeId, remove.jobTitle);
-	await addToDuplicateIndex({ id: keepId, jobTitle: keep.jobTitle });
+	await removeFromDuplicateIndex(userEmail, removeId, remove.jobTitle);
+	await addToDuplicateIndex(userEmail, { id: keepId, jobTitle: keep.jobTitle });
 
 	const entry: ResolutionEntry = {
 		groupKey,
@@ -484,13 +489,13 @@ export async function mergeJobs(
 	// Store snapshots so we can undo
 	try {
 		localStorage.setItem(
-			`${REMOVED_PREFIX}${entry.timestamp}`,
+			`${removedPrefix(userEmail)}${entry.timestamp}`,
 			JSON.stringify({ keepSnapshot, removeSnapshot }),
 		);
 	} catch {
 		console.warn("[jobs-db] localStorage full, undo snapshots not saved");
 	}
-	saveResolution(entry);
+	saveResolution(userEmail, entry);
 
 	return { keepId, removeId, groupKey };
 }
@@ -555,9 +560,9 @@ export async function mergeIntoNew(
 
 	// Update duplicate index
 	for (const r of toRemove) {
-		await removeFromDuplicateIndex(r.id, r.jobTitle);
+		await removeFromDuplicateIndex(userEmail, r.id, r.jobTitle);
 	}
-	await addToDuplicateIndex({
+	await addToDuplicateIndex(userEmail, {
 		id: keep.id,
 		jobTitle: newTitle ?? keep.jobTitle,
 	});
@@ -575,7 +580,7 @@ export async function mergeIntoNew(
 	// Store snapshots so undo can restore
 	try {
 		localStorage.setItem(
-			`${REMOVED_PREFIX}${entry.timestamp}`,
+			`${removedPrefix(userEmail)}${entry.timestamp}`,
 			JSON.stringify({
 				keepSnapshot,
 				removeSnapshot: removeSnapshots,
@@ -584,7 +589,7 @@ export async function mergeIntoNew(
 	} catch {
 		console.warn("[jobs-db] localStorage full, undo snapshots not saved");
 	}
-	saveResolution(entry);
+	saveResolution(userEmail, entry);
 
 	return true;
 }
@@ -593,8 +598,11 @@ export async function mergeIntoNew(
  * Undo a previous merge: restore the removed record and revert the kept record
  * to its pre-merge state.
  */
-export async function undoMerge(timestamp: number): Promise<boolean> {
-	const all = getResolutions();
+export async function undoMerge(
+	userEmail: string,
+	timestamp: number,
+): Promise<boolean> {
+	const all = getResolutions(userEmail);
 	const entry = all.find(
 		(r) => r.timestamp === timestamp && r.action === "merge",
 	);
@@ -602,7 +610,7 @@ export async function undoMerge(timestamp: number): Promise<boolean> {
 
 	// Retrieve snapshots
 	try {
-		const raw = localStorage.getItem(`${REMOVED_PREFIX}${timestamp}`);
+		const raw = localStorage.getItem(`${removedPrefix(userEmail)}${timestamp}`);
 		if (!raw) return false;
 		const { keepSnapshot, removeSnapshot } = JSON.parse(raw);
 
@@ -620,31 +628,32 @@ export async function undoMerge(timestamp: number): Promise<boolean> {
 		});
 
 		// Rebuild duplicate index — safest after undo (titles/IDs may differ)
-		await addToDuplicateIndex({
+		const keepUserEmail = keepSnapshot.userEmail ?? userEmail;
+		await addToDuplicateIndex(keepUserEmail, {
 			id: keepSnapshot.id,
 			jobTitle: keepSnapshot.jobTitle,
 		});
 		if (Array.isArray(removeSnapshot)) {
 			for (const rec of removeSnapshot) {
-				await addToDuplicateIndex({
+				await addToDuplicateIndex(rec.userEmail ?? userEmail, {
 					id: rec.id,
 					jobTitle: rec.jobTitle,
 				});
 			}
 		} else {
-			await addToDuplicateIndex({
+			await addToDuplicateIndex(removeSnapshot.userEmail ?? userEmail, {
 				id: removeSnapshot.id,
 				jobTitle: removeSnapshot.jobTitle,
 			});
 		}
 
 		// Remove snapshots
-		localStorage.removeItem(`${REMOVED_PREFIX}${timestamp}`);
+		localStorage.removeItem(`${removedPrefix(userEmail)}${timestamp}`);
 		// Mark as undone in history
 		const updated = all.map((r) =>
 			r.timestamp === timestamp ? { ...r, action: "merge-undo" as const } : r,
 		);
-		localStorage.setItem(RESOLUTION_KEY, JSON.stringify(updated));
+		localStorage.setItem(resolutionKey(userEmail), JSON.stringify(updated));
 
 		return true;
 	} catch (err) {

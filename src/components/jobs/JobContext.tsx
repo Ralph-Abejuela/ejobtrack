@@ -5,6 +5,7 @@ import {
 	useCallback,
 	useMemo,
 	useEffect,
+	useRef,
 	type ReactNode,
 } from "react";
 import { useAuth } from "@/lib/auth";
@@ -107,31 +108,93 @@ export function JobProvider({ children }: { children: ReactNode }) {
 	const { jobs, statusCounts, loaded, state, loadMore, reload } =
 		useJobPoller();
 
-	// ── Expanded job ──
+	// ── All useState declarations (order-independent) ──
 	const [expandedJob, setExpandedJob] = useState<string | null>(null);
-
-	// ── Duplicate detection ──
 	const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
 	const [showDuplicates, setShowDuplicates] = useState(false);
 	const [merging, setMerging] = useState<string | null>(null);
-	const [dismissed, setDismissed] = useState<DismissalMap>(() => {
-		try {
-			const raw = localStorage.getItem("dismissed_dup_groups");
-			if (!raw) return {};
-			const parsed = JSON.parse(raw);
-			// Support old array-of-strings format
-			return Array.isArray(parsed)
-				? Object.fromEntries(parsed.map((k: string) => [k, -1]))
-				: parsed;
-		} catch {
-			console.warn("[JobContext] Failed to parse dismissed groups");
-			return {};
-		}
-	});
+	const [dismissed, setDismissed] = useState<DismissalMap>({});
 	const [selectedJobs, setSelectedJobs] = useState<Set<string>>(
 		() => new Set(),
 	);
+	const [mergeNewModal, setMergeNewModal] = useState<{
+		groupKey: string;
+	} | null>(null);
+	const [restoringId, setRestoringId] = useState<string | null>(null);
+	const [resolutionHistory, setResolutionHistory] = useState<ResolutionEntry[]>(
+		[],
+	);
+	const [showHistory, setShowHistory] = useState(false);
+	const [undoing, setUndoing] = useState(false);
+	const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
+	const [selectedEmail, setSelectedEmail] = useState<SelectedEmail | null>(
+		null,
+	);
+	const [fetchingEmail, setFetchingEmail] = useState(false);
 
+	// ── Reset all user-scoped state when account changes ──
+	const prevEmailRef = useRef<string | null>(null);
+
+	useEffect(() => {
+		const email = user?.email ?? null;
+		if (email === prevEmailRef.current) return;
+		prevEmailRef.current = email;
+
+		// Wipe stale state from previous account
+		setDuplicates([]);
+		setShowDuplicates(false);
+		setShowHistory(false);
+		setExpandedJob(null);
+		setActiveEmailId(null);
+		setSelectedEmail(null);
+		setFetchingEmail(false);
+		setMergeNewModal(null);
+		setSelectedJobs(new Set());
+		setMerging(null);
+
+		if (!email) {
+			setDismissed({});
+			setResolutionHistory([]);
+			return;
+		}
+
+		// Load user-scoped dismissals
+		const dismissedKey = `dismissed_dup_groups_${email}`;
+		try {
+			const raw = localStorage.getItem(dismissedKey);
+			if (raw) {
+				const parsed = JSON.parse(raw);
+				setDismissed(
+					Array.isArray(parsed)
+						? Object.fromEntries(parsed.map((k: string) => [k, -1]))
+						: parsed,
+				);
+			} else {
+				// Migrate from old non-scoped key if this email never dismissed before
+				const oldRaw = localStorage.getItem("dismissed_dup_groups");
+				if (oldRaw) {
+					localStorage.setItem(dismissedKey, oldRaw);
+					localStorage.removeItem("dismissed_dup_groups");
+					const parsed = JSON.parse(oldRaw);
+					setDismissed(
+						Array.isArray(parsed)
+							? Object.fromEntries(parsed.map((k: string) => [k, -1]))
+							: parsed,
+					);
+				} else {
+					setDismissed({});
+				}
+			}
+		} catch {
+			setDismissed({});
+		}
+
+		if (email) {
+			setResolutionHistory(getResolutionHistory(email));
+		}
+	}, [user?.email]);
+
+	// ── Fetch duplicates when user or jobs change ──
 	useEffect(() => {
 		if (!user?.email) {
 			setDuplicates([]);
@@ -139,7 +202,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		}
 		(async () => {
 			await ensureDuplicateIndex(user.email);
-			const result = await getDuplicateGroups();
+			const result = await getDuplicateGroups(user.email);
 			setDuplicates(result);
 
 			// Auto un-ignore dismissed groups when new jobs joined them
@@ -147,7 +210,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				groupKey: g.groupKey,
 				count: g.jobs.length,
 			}));
-			const fresh = pruneStaleDismissals(groups);
+			const fresh = pruneStaleDismissals(dismissed, groups);
 			setDismissed((prev) => {
 				const prevKeys = Object.keys(prev);
 				const freshKeys = Object.keys(fresh);
@@ -159,9 +222,20 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		})();
 	}, [user?.email, jobs]);
 
+	// ── Derived / memoized values ──
 	const visibleDuplicates = useMemo(
 		() => duplicates.filter((g) => dismissed[g.groupKey] === undefined),
 		[duplicates, dismissed],
+	);
+
+	const persistDismissed = useCallback(
+		(next: DismissalMap) => {
+			const key = user?.email
+				? `dismissed_dup_groups_${user.email}`
+				: "dismissed_dup_groups";
+			localStorage.setItem(key, JSON.stringify(next));
+		},
+		[user?.email],
 	);
 
 	const handleDismiss = useCallback(
@@ -170,10 +244,10 @@ export function JobProvider({ children }: { children: ReactNode }) {
 			const count = group?.jobs.length ?? -1;
 			setDismissed((prev) => {
 				const next = { ...prev, [groupKey]: count };
-				localStorage.setItem("dismissed_dup_groups", JSON.stringify(next));
+				persistDismissed(next);
 				return next;
 			});
-			getResolutionHistory(); // ensure fresh
+			if (user?.email) getResolutionHistory(user.email); // ensure fresh
 			toast("Duplicate group ignored", {
 				position: "bottom-right",
 				action: {
@@ -183,17 +257,14 @@ export function JobProvider({ children }: { children: ReactNode }) {
 						setDismissed((prev) => {
 							const next = { ...prev };
 							delete next[groupKey];
-							localStorage.setItem(
-								"dismissed_dup_groups",
-								JSON.stringify(next),
-							);
+							persistDismissed(next);
 							return next;
 						});
 					},
 				},
 			});
 		},
-		[duplicates],
+		[duplicates, persistDismissed],
 	);
 
 	const toggleSelect = useCallback((jobId: string) => {
@@ -205,15 +276,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		});
 	}, []);
 
-	// ── Merge into New modal ──
-	const [mergeNewModal, setMergeNewModal] = useState<{
-		groupKey: string;
-	} | null>(null);
-
 	// ── Hidden (soft-deleted) jobs ──
-	const [restoringId, setRestoringId] = useState<string | null>(null);
-
-	// Derive hidden jobs from the already-loaded `jobs` array
 	const hiddenJobs = useMemo(
 		() =>
 			jobs
@@ -222,23 +285,11 @@ export function JobProvider({ children }: { children: ReactNode }) {
 		[jobs],
 	);
 
-	// ── Resolution history ──
-	const [resolutionHistory, setResolutionHistory] = useState<ResolutionEntry[]>(
-		() => getResolutionHistory(),
-	);
-	const [showHistory, setShowHistory] = useState(false);
-	const [undoing, setUndoing] = useState(false);
-
 	const refreshResolutionHistory = useCallback(() => {
-		setResolutionHistory(getResolutionHistory());
-	}, []);
-
-	// ── Timeline email ──
-	const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
-	const [selectedEmail, setSelectedEmail] = useState<SelectedEmail | null>(
-		null,
-	);
-	const [fetchingEmail, setFetchingEmail] = useState(false);
+		if (user?.email) {
+			setResolutionHistory(getResolutionHistory(user.email));
+		}
+	}, [user?.email]);
 
 	useEffect(() => {
 		if (activeEmailId === "manual") {
@@ -320,9 +371,9 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				const ok = await mergeIntoNew(user.email, ids);
 				if (ok) {
 					await reload();
-					setResolutionHistory(getResolutionHistory());
+					setResolutionHistory(getResolutionHistory(user.email));
 					setSelectedJobs(new Set());
-					const ts = getResolutionHistory()[0]?.timestamp;
+					const ts = getResolutionHistory(user.email)[0]?.timestamp;
 					toast(`Merged ${ids.length} records`, {
 						position: "bottom-right",
 						action: {
@@ -330,10 +381,10 @@ export function JobProvider({ children }: { children: ReactNode }) {
 							onClick: () => {
 								if (!ts) return;
 								setUndoing(true);
-								undoMerge(ts)
+								undoMerge(user.email, ts)
 									.then((ok) => {
 										if (ok) {
-											setResolutionHistory(getResolutionHistory());
+											setResolutionHistory(getResolutionHistory(user.email));
 											reload();
 										}
 									})
@@ -358,10 +409,10 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				const ok = await mergeIntoNew(user.email, ids, company, title);
 				if (ok) {
 					await reload();
-					setResolutionHistory(getResolutionHistory());
+					setResolutionHistory(getResolutionHistory(user.email));
 					setSelectedJobs(new Set());
 					setMergeNewModal(null);
-					const ts = getResolutionHistory()[0]?.timestamp;
+					const ts = getResolutionHistory(user.email)[0]?.timestamp;
 					toast(`Merged into "${company}"`, {
 						position: "bottom-right",
 						action: {
@@ -369,10 +420,10 @@ export function JobProvider({ children }: { children: ReactNode }) {
 							onClick: () => {
 								if (!ts) return;
 								setUndoing(true);
-								undoMerge(ts)
+								undoMerge(user.email, ts)
 									.then((ok) => {
 										if (ok) {
-											setResolutionHistory(getResolutionHistory());
+											setResolutionHistory(getResolutionHistory(user.email));
 											reload();
 										}
 									})
@@ -436,6 +487,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				const ok = await restoreDeletedJob(user.email, jobId);
 				if (ok) {
 					toast("Job restored");
+					setResolutionHistory(getResolutionHistory(user.email));
 					await reload();
 				}
 			} finally {

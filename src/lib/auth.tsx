@@ -6,8 +6,8 @@ import {
 	useState,
 	useCallback,
 	type ReactNode,
-	useEffect,
 	useRef,
+	useEffect,
 } from "react";
 import { setOnUnauthorized } from "./gmail";
 import { capture, identifyUser } from "./analytics";
@@ -24,29 +24,23 @@ export interface GoogleUser {
 }
 
 interface AuthState {
-	/** Decoded ID token payload */
+	/** Decoded user profile */
 	user: GoogleUser | null;
-	/** Raw ID token JWT */
-	idToken: string | null;
 	/** OAuth access token for Gmail API */
 	accessToken: string | null;
-	/** True while initialising GSI on mount */
+	/** True while sign-in popup is open */
 	loading: boolean;
-	/** True while requesting Gmail OAuth scope */
-	requestingScope: boolean;
-	/** True once google.accounts.id.initialize() has been called */
-	gsiReady: boolean;
 }
 
 interface AuthContextValue extends AuthState {
 	signOut: () => void;
-	/** Request gmail.readonly access token (prompts consent if first time) */
-	requestGmailScope: () => Promise<string | null>;
+	/** Sign in with Google — single OAuth popup for both auth + Gmail scope */
+	signIn: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-// ── JWT decode helper (no deps needed) ───────────────────────────────────
+// ── JWT decode helper (legacy session migration only) ─────────────────────
 
 function decodeJwtPayload(token: string): GoogleUser | null {
 	try {
@@ -59,157 +53,144 @@ function decodeJwtPayload(token: string): GoogleUser | null {
 	}
 }
 
+// ── Fetch user info from Google UserInfo API ──────────────────────────────
+
+async function fetchUserInfo(accessToken: string): Promise<GoogleUser | null> {
+	try {
+		const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+			headers: { Authorization: `Bearer ${accessToken}` },
+		});
+		if (!res.ok) {
+			console.warn(`[auth] UserInfo API returned ${res.status}`);
+			return null;
+		}
+		const data = await res.json();
+		return {
+			sub: data.sub,
+			email: data.email,
+			name: data.name,
+			picture: data.picture,
+			given_name: data.given_name,
+			family_name: data.family_name,
+		};
+	} catch (err) {
+		console.warn("[auth] UserInfo API call failed", err);
+		return null;
+	}
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────
 
-const SESSION_KEY = "ejobtrack_google_session";
+const SESSION_KEY = "ejobtrack_session";
 
 function restoreSession(): AuthState {
 	try {
 		const saved = sessionStorage.getItem(SESSION_KEY);
 		if (saved) {
-			const parsed = JSON.parse(saved) as {
-				idToken: string;
-				accessToken: string | null;
-			};
-			const user = decodeJwtPayload(parsed.idToken);
-			if (user) {
+			const parsed = JSON.parse(saved);
+			// New format: { user, accessToken }
+			if (parsed.user?.email && parsed.accessToken) {
 				return {
-					user,
-					idToken: parsed.idToken,
+					user: parsed.user,
 					accessToken: parsed.accessToken,
 					loading: false,
-					requestingScope: false,
-					gsiReady: false,
 				};
+			}
+			// Legacy format from old GSI flow: { idToken, accessToken } — migrate
+			if (parsed.idToken) {
+				const user = decodeJwtPayload(parsed.idToken);
+				if (user && parsed.accessToken) {
+					const migrated = { user, accessToken: parsed.accessToken };
+					sessionStorage.setItem(SESSION_KEY, JSON.stringify(migrated));
+					return { user, accessToken: parsed.accessToken, loading: false };
+				}
 			}
 		}
 	} catch {
 		console.warn("[auth] Corrupt session, ignoring");
 	}
-	return {
-		user: null,
-		idToken: null,
-		accessToken: null,
-		loading: false,
-		requestingScope: false,
-		gsiReady: false,
-	};
+	return { user: null, accessToken: null, loading: false };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
 	const [state, setState] = useState<AuthState>(restoreSession);
 
-	const gmailTokenClientRef = useRef<google.accounts.oauth2.TokenClient | null>(
-		null,
-	);
-
 	// --- Persist to sessionStorage ---
-	const persist = useCallback((idToken: string, accessToken: string | null) => {
-		sessionStorage.setItem(
-			SESSION_KEY,
-			JSON.stringify({ idToken, accessToken }),
-		);
+	const persist = useCallback((user: GoogleUser, accessToken: string) => {
+		sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user, accessToken }));
 	}, []);
 
-	// --- GSI credential callback ---
-	const handleCredentialResponse = useCallback(
-		(response: google.accounts.id.CredentialResponse) => {
-			const user = decodeJwtPayload(response.credential);
-			if (!user) return;
+	// --- Unified sign-in: one OAuth popup for auth + Gmail scope ---
+	const signIn = useCallback(async (): Promise<string | null> => {
+		if (typeof google === "undefined" || !google.accounts?.oauth2) {
+			console.warn("[auth] GIS library not loaded yet");
+			return null;
+		}
 
-			setState((prev) => ({
-				...prev,
-				user,
-				idToken: response.credential,
-				loading: false,
-			}));
-			persist(response.credential, null);
-			identifyUser(user.email);
-			capture("user_signed_in", { email: user.email });
+		setState((prev) => ({ ...prev, loading: true }));
 
-			// Create token client for Gmail scope (lazy – user must click "read email" to trigger)
-			gmailTokenClientRef.current = google.accounts.oauth2.initTokenClient({
+		return new Promise<string | null>((resolve) => {
+			const client = google.accounts.oauth2.initTokenClient({
 				client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-				scope: "https://www.googleapis.com/auth/gmail.readonly",
-				callback: (tokenResponse) => {
-					if (tokenResponse && tokenResponse.access_token) {
-						setState((prev) => ({
-							...prev,
-							accessToken: tokenResponse.access_token,
-							requestingScope: false,
-						}));
-						persist(response.credential, tokenResponse.access_token);
-					} else {
-						setState((prev) => ({ ...prev, requestingScope: false }));
+				scope:
+					"openid email profile https://www.googleapis.com/auth/gmail.readonly",
+				callback: async (response: google.accounts.oauth2.TokenResponse) => {
+					if (!response.access_token) {
+						console.warn("[auth] OAuth popup cancelled or failed");
+						setState((prev) => ({ ...prev, loading: false }));
+						resolve(null);
+						return;
 					}
+
+					// Fetch user profile from Google UserInfo API using the access token
+					// This guarantees the user matches the account that granted Gmail access
+					const user = await fetchUserInfo(response.access_token);
+					if (!user) {
+						console.warn(
+							"[auth] Got access token but failed to fetch user info",
+						);
+						setState((prev) => ({ ...prev, loading: false }));
+						resolve(null);
+						return;
+					}
+
+					setState({
+						user,
+						accessToken: response.access_token,
+						loading: false,
+					});
+					persist(user, response.access_token);
+					identifyUser(user.email);
+					capture("user_signed_in", { email: user.email });
+					resolve(response.access_token);
 				},
 			});
-		},
-		[persist],
-	);
-
-	// --- Initialise GSI on mount ---
-	useEffect(() => {
-		// If already signed in from session, skip GSI init
-		if (state.user) return;
-
-		function initGSI() {
-			if (typeof google === "undefined" || !google.accounts?.id) return;
-			google.accounts.id.initialize({
-				client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-				use_fedcm_for_button: true,
-				callback: handleCredentialResponse,
-			});
-			setState((prev) => ({ ...prev, gsiReady: true }));
-			google.accounts.id.prompt();
-		}
-
-		// Already loaded?
-		if (typeof google !== "undefined" && google.accounts?.id) {
-			initGSI();
-			return;
-		}
-
-		// Wait for the async script to load
-		const script = document.querySelector(
-			'script[src="https://accounts.google.com/gsi/client"]',
-		);
-		if (script) {
-			script.addEventListener("load", initGSI, { once: true });
-			// Fallback: if script already loaded but boostrapped, re-check
-			const fallback = setTimeout(initGSI, 2000);
-			return () => {
-				script.removeEventListener("load", initGSI);
-				clearTimeout(fallback);
-			};
-		}
-	}, [handleCredentialResponse, state.user]);
-
-	// Guard: single in-flight refresh at a time
-	const refreshingRef = useRef(false);
-	const refreshResultRef = useRef<Promise<string | null> | null>(null);
+			client.requestAccessToken();
+		});
+	}, [persist]);
 
 	// --- Sign out ---
 	const signOut = useCallback(() => {
 		sessionStorage.removeItem(SESSION_KEY);
-		setOnUnauthorized(null); // prevent retry loops
-		gmailTokenClientRef.current = null;
-		refreshingRef.current = false;
-		refreshResultRef.current = null;
+		setOnUnauthorized(null);
 
-		setState({
-			user: null,
-			idToken: null,
-			accessToken: null,
-			loading: false,
-			requestingScope: false,
-			gsiReady: true,
-		});
-	}, []);
+		// Revoke OAuth tokens
+		if (state.accessToken && typeof google !== "undefined") {
+			try {
+				google.accounts.oauth2.revoke(state.accessToken, () => {});
+			} catch {
+				// Best-effort revoke
+			}
+		}
 
-	// Wire 401 → try silent token refresh, fall back to signOut
+		setState({ user: null, accessToken: null, loading: false });
+	}, [state.accessToken]);
+
+	// --- Silent token refresh (triggered by 401 from Gmail API) ---
+	const refreshingRef = useRef(false);
+	const refreshResultRef = useRef<Promise<string | null> | null>(null);
+
 	const refreshAccessToken = useCallback(async (): Promise<string | null> => {
-		// Dedup concurrent calls — if a refresh is already in flight, wait for it
 		if (refreshingRef.current && refreshResultRef.current) {
 			return refreshResultRef.current;
 		}
@@ -217,8 +198,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		const promise = new Promise<string | null>((resolve) => {
 			refreshingRef.current = true;
 
-			// Timeout guard — if TokenClient callback never fires, don't hang forever
-			// Silent iframe auth either resolves in <100ms or never fires (privacy blockers)
 			const timeout = setTimeout(() => {
 				console.warn("[auth] Token refresh timed out — signing out");
 				refreshingRef.current = false;
@@ -229,7 +208,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 			const refreshClient = google.accounts.oauth2.initTokenClient({
 				client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-				scope: "https://www.googleapis.com/auth/gmail.readonly",
+				scope:
+					"openid email profile https://www.googleapis.com/auth/gmail.readonly",
 				prompt: "", // silent — no popup if user already granted
 				callback: (tokenResponse) => {
 					clearTimeout(timeout);
@@ -241,10 +221,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 							...prev,
 							accessToken: tokenResponse.access_token,
 						}));
-						// Use latest idToken from ref, not stale closure
 						setState((prev) => {
-							if (prev.idToken)
-								persist(prev.idToken, tokenResponse.access_token!);
+							if (prev.user) persist(prev.user, tokenResponse.access_token!);
 							return prev;
 						});
 						resolve(tokenResponse.access_token);
@@ -266,46 +244,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		setOnUnauthorized(refreshAccessToken);
 	}, [refreshAccessToken]);
 
-	// --- Request Gmail scope (user gesture) ---
-	const requestGmailScope = useCallback(async (): Promise<string | null> => {
-		// If we already have a token, return it
-		if (state.accessToken) return state.accessToken;
-
-		setState((prev) => ({ ...prev, requestingScope: true }));
-
-		return new Promise((resolve) => {
-			// Need to create fresh client each time or re-use with overridable config
-			const client = google.accounts.oauth2.initTokenClient({
-				client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-				scope: "https://www.googleapis.com/auth/gmail.readonly",
-				callback: (tokenResponse) => {
-					if (tokenResponse && tokenResponse.access_token) {
-						setState((prev) => ({
-							...prev,
-							accessToken: tokenResponse.access_token,
-							requestingScope: false,
-						}));
-						if (state.idToken) {
-							persist(state.idToken, tokenResponse.access_token);
-						}
-						if (state.user) {
-							capture("gmail_authorized", {
-								email: state.user.email,
-							});
-						}
-						resolve(tokenResponse.access_token);
-					} else {
-						setState((prev) => ({ ...prev, requestingScope: false }));
-						resolve(null);
-					}
-				},
-			});
-			client.requestAccessToken();
-		});
-	}, [state.accessToken, state.idToken, persist]);
-
 	return (
-		<AuthContext.Provider value={{ ...state, signOut, requestGmailScope }}>
+		<AuthContext.Provider value={{ ...state, signOut, signIn }}>
 			{children}
 		</AuthContext.Provider>
 	);

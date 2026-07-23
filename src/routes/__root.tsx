@@ -2,7 +2,6 @@ import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { AuthProvider } from "@/lib/auth";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
-import GmailAuthModal from "@/components/GmailAuthModal";
 import { Toaster } from "@/components/ui/sonner";
 
 function RootLayout() {
@@ -15,7 +14,6 @@ function RootLayout() {
 				</main>
 				<Footer />
 			</div>
-			<GmailAuthModal />
 			<Toaster closeButton />
 		</AuthProvider>
 	);

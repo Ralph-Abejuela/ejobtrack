@@ -33,6 +33,21 @@ db.version(1).stores({
 	scanned: "id, userEmail",
 });
 
+// Version 2: clear old scanned data — id key now includes userEmail prefix
+db.version(2)
+	.stores({
+		state: "userEmail",
+		scanned: "id, userEmail",
+	})
+	.upgrade(async (tx) => {
+		await tx.table("scanned").clear();
+	});
+
+/** Build a scoped primary key for scanned emails. */
+function scannedKey(userEmail: string, emailId: string): string {
+	return `${userEmail}:${emailId}`;
+}
+
 export { db };
 
 // ── Crawl state ops ───────────────────────────────────────────────────────
@@ -110,13 +125,16 @@ export async function markScanned(
 ): Promise<void> {
 	await db.transaction("rw", db.scanned, async () => {
 		for (const id of ids) {
-			await db.scanned.put({ id, userEmail });
+			await db.scanned.put({ id: scannedKey(userEmail, id), userEmail });
 		}
 	});
 }
 
-export async function isScanned(id: string): Promise<boolean> {
-	return !!(await db.scanned.get(id));
+export async function isScanned(
+	userEmail: string,
+	id: string,
+): Promise<boolean> {
+	return !!(await db.scanned.get(scannedKey(userEmail, id)));
 }
 
 export async function getScannedCount(userEmail: string): Promise<number> {
