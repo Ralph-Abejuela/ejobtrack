@@ -50,73 +50,6 @@ function scannedKey(userEmail: string, emailId: string): string {
 
 export { db };
 
-// ── Crawl state ops ───────────────────────────────────────────────────────
-
-export async function getCrawlState(
-	userEmail: string,
-): Promise<JobCrawlState | undefined> {
-	return db.state.get(userEmail);
-}
-
-export async function initCrawlCycle(userEmail: string): Promise<void> {
-	const existing = await db.state.get(userEmail);
-	await db.state.put({
-		userEmail,
-		newestTs: existing?.newestTs ?? null,
-		oldestTs: existing?.oldestTs ?? null,
-		totalJobs: existing?.totalJobs ?? 0,
-		cycleStartedAt: Date.now(),
-		cycleScanned: 0,
-	});
-}
-
-export async function updateCrawlBoundaries(
-	userEmail: string,
-	newestTs: number,
-	oldestTs: number,
-): Promise<void> {
-	const state = await db.state.get(userEmail);
-	if (!state) return;
-
-	await db.state.put({
-		...state,
-		newestTs:
-			state.newestTs != null ? Math.max(state.newestTs, newestTs) : newestTs,
-		oldestTs:
-			state.oldestTs != null ? Math.min(state.oldestTs, oldestTs) : oldestTs,
-	});
-}
-
-export async function incrementCycleScanned(
-	userEmail: string,
-	count: number,
-): Promise<number> {
-	const state = await db.state.get(userEmail);
-	if (!state) return 0;
-
-	const newTotal = state.cycleScanned + count;
-	await db.state.put({ ...state, cycleScanned: newTotal });
-	return newTotal;
-}
-
-export async function incrementTotalJobs(
-	userEmail: string,
-	count: number,
-): Promise<number> {
-	const state = await db.state.get(userEmail);
-	if (!state) return 0;
-
-	const newTotal = state.totalJobs + count;
-	await db.state.put({ ...state, totalJobs: newTotal });
-	return newTotal;
-}
-
-/** Total jobs found across all cycles. */
-export async function getTotalJobs(userEmail: string): Promise<number> {
-	const state = await db.state.get(userEmail);
-	return state?.totalJobs ?? 0;
-}
-
 // ── Scanned email dedup ────────────────────────────────────────────────────
 
 export async function markScanned(
@@ -139,11 +72,4 @@ export async function isScanned(
 
 export async function getScannedCount(userEmail: string): Promise<number> {
 	return db.scanned.where({ userEmail }).count();
-}
-
-// ── Reset ─────────────────────────────────────────────────────────────────
-
-export async function resetJobCrawl(userEmail: string): Promise<void> {
-	await db.state.delete(userEmail);
-	await db.scanned.where({ userEmail }).delete();
 }

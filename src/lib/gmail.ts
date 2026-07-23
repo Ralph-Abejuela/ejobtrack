@@ -217,24 +217,6 @@ export function parseMessage(msg: GmailMessage): ParsedEmail {
 	};
 }
 
-/** Parse a minimal message into ParsedEmail with empty body. */
-export function parseMessageMeta(msg: GmailMessage): ParsedEmail {
-	const headers = msg.payload.headers;
-	return {
-		id: msg.id,
-		threadId: msg.threadId,
-		subject: getHeader(headers, "Subject"),
-		from: getHeader(headers, "From"),
-		to: getHeader(headers, "To"),
-		date: getHeader(headers, "Date"),
-		snippet: msg.snippet,
-		body: "",
-		bodyType: "unknown",
-		labelIds: msg.labelIds,
-		internalDate: msg.internalDate,
-	};
-}
-
 // ── API calls ──────────────────────────────────────────────────────────────
 
 /** List message IDs with pagination. */
@@ -291,64 +273,4 @@ export async function getMessage(
 	}
 
 	return res.json() as Promise<GmailMessage>;
-}
-
-/**
- * Fetch messages with metadata only (no body).
- * Uses format=metadata which returns headers + snippet.
- */
-export async function fetchMessagesMeta(
-	accessToken: string,
-	messageIds: string[],
-	concurrency = 6,
-): Promise<ParsedEmail[]> {
-	const results: ParsedEmail[] = [];
-	const headerFilter = ["Subject", "From", "To", "Date"];
-	for (let i = 0; i < messageIds.length; i += concurrency) {
-		const chunk = messageIds.slice(i, i + concurrency);
-		const promises = chunk.map((id) =>
-			getMessage(accessToken, id, "metadata", headerFilter)
-				.then(parseMessageMeta)
-				.catch(() => null),
-		);
-		const chunkResults = await Promise.all(promises);
-		results.push(...chunkResults.filter((r): r is ParsedEmail => r !== null));
-	}
-	return results;
-}
-
-/**
- * List + fetch metadata for a page of messages (no body).
- */
-export async function fetchEmailsPageMeta(
-	accessToken: string,
-	opts: {
-		maxResults?: number;
-		pageToken?: string | null;
-		q?: string;
-		labelIds?: string[];
-	} = {},
-): Promise<{ emails: ParsedEmail[]; nextPageToken: string | null }> {
-	const listRes = await listMessages(accessToken, opts);
-	const ids = listRes.messages.map((m) => m.id);
-	const emails =
-		ids.length > 0 ? await fetchMessagesMeta(accessToken, ids) : [];
-	return { emails, nextPageToken: listRes.nextPageToken };
-}
-
-/**
- * Fetch the full body for a single message.
- * Returns just the parsed body string.
- */
-export async function fetchMessageBody(
-	accessToken: string,
-	messageId: string,
-): Promise<{
-	body: string;
-	bodyHtml: string;
-	bodyType: "text/plain" | "text/html" | "unknown";
-}> {
-	const msg = await getMessage(accessToken, messageId, "full");
-	const { body, bodyHtml, type } = extractBody(msg.payload);
-	return { body, bodyHtml, bodyType: type };
 }
