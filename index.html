@@ -56,6 +56,35 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!-- Visible to Google's crawler without JS executing -->
+    <noscript>
+      <div
+        style="
+          padding: 2rem;
+          max-width: 42rem;
+          margin: 0 auto;
+          text-align: center;
+        "
+      >
+        <h1>ejobtrack</h1>
+        <p style="font-size: 1.125rem">
+          Track your job applications from Gmail
+        </p>
+        <p style="font-size: 0.875rem; line-height: 1.6">
+          ejobtrack is a job application tracker that uses read-only Gmail
+          access to detect and organize your application emails from job
+          platforms. It processes everything locally in your browser. No data is
+          sent to any server. Your email content stays private and never leaves
+          your device.
+        </p>
+        <div style="display: flex; gap: 1rem; justify-content: center">
+          <a href="/privacy">Privacy Policy</a>
+          <a href="/terms">Terms of Service</a>
+        </div>
+      </div>
+    </noscript>
+
     <script src="https://accounts.google.com/gsi/client" async></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
