@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://ejobtrack.ralphabejuela.com">→ Live Demo</a>
+  <a href="https://ejobtrack.ralphabejuela.com">→ Live Site</a>
   &nbsp;·&nbsp;
   <a href="#features">Features</a>
   &nbsp;·&nbsp;
@@ -53,16 +53,16 @@ ejobtrack removes the server entirely. Gmail API calls go direct from your brows
 
 ## Features
 
-| Feature | How | Benefit |
-|---|---|---|
-| **Architectural privacy** | No backend, no database, data never leaves your browser | Your emails stay on your device. Nothing to leak. |
-| **Gmail auto-sync** | One OAuth sign-in triggers automatic inbox scan | No typing, no CSV imports, no manual entry |
-| **Multi-platform parsing** | Dedicated parsers for JobStreet, LinkedIn, Indeed. Generic parser for 50+ ATS | Works with any platform out of the box |
-| **On-device ML** | Transformers.js classifies unknown senders locally with keyword fallback | No API calls to OpenAI. No data sent for analysis. Free and private. |
-| **Status timeline** | Every status change tracked with source email ID and timestamp | See Applied → Viewed → Interview → Offer/Rejected with one click |
-| **Duplicate merge** | Normalized title matching with fuzzy company comparison | Same role from multiple platforms merged with full undo |
-| **Offline-first** | All data in IndexedDB with compound indexes | Works without a network after first sync |
-| **Fully auditable** | Open source static build with no server-side code | Inspect the network tab. Zero unexpected requests. |
+| Feature                    | How                                                                           | Benefit                                                              |
+| -------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Architectural privacy**  | No backend, no database, data never leaves your browser                       | Your emails stay on your device. Nothing to leak.                    |
+| **Gmail auto-sync**        | One OAuth sign-in triggers automatic inbox scan                               | No typing, no CSV imports, no manual entry                           |
+| **Multi-platform parsing** | Dedicated parsers for JobStreet, LinkedIn, Indeed. Generic parser for 50+ ATS | Works with any platform out of the box                               |
+| **On-device ML**           | Transformers.js classifies unknown senders locally with keyword fallback      | No API calls to OpenAI. No data sent for analysis. Free and private. |
+| **Status timeline**        | Every status change tracked with source email ID and timestamp                | See Applied → Viewed → Interview → Offer/Rejected with one click     |
+| **Duplicate merge**        | Normalized title matching with fuzzy company comparison                       | Same role from multiple platforms merged with full undo              |
+| **Offline-first**          | All data in IndexedDB with compound indexes                                   | Works without a network after first sync                             |
+| **Fully auditable**        | Open source static build with no server-side code                             | Inspect the network tab. Zero unexpected requests.                   |
 
 Only network calls: Gmail API (read-only) + optional PostHog (anonymized event names, opt-in, proxied).
 Open DevTools and verify yourself.
@@ -99,12 +99,12 @@ Email sync checks every 15 minutes and on tab focus. Rate limits handled with re
 
 ## Supported Platforms
 
-| Platform | Type | Scope |
-|---|---|---|
-| **JobStreet** | Dedicated | Bulk weekly summaries, multi-job emails |
-| **LinkedIn** | Dedicated | Applications, views, rejections, interviews |
-| **Indeed** | Dedicated | Application updates |
-| **50+ ATS** | Generic | Workday, Lever, Greenhouse, SmartRecruiters, Ashby, BambooHR, iCIMS, Jobvite, Workable |
+| Platform      | Type      | Scope                                                                                  |
+| ------------- | --------- | -------------------------------------------------------------------------------------- |
+| **JobStreet** | Dedicated | Bulk weekly summaries, multi-job emails                                                |
+| **LinkedIn**  | Dedicated | Applications, views, rejections, interviews                                            |
+| **Indeed**    | Dedicated | Application updates                                                                    |
+| **50+ ATS**   | Generic   | Workday, Lever, Greenhouse, SmartRecruiters, Ashby, BambooHR, iCIMS, Jobvite, Workable |
 
 ---
 
@@ -141,22 +141,34 @@ These are intentional constraints that keep your data inside your browser.
 
 ## Roadmap
 
-| Feature | What | Status |
-|---|---|---|
-| **Data export/import** | JSON backup and restore so your data is never locked in | 🚧 In progress |
-| **Saved filter presets** | Bookmark combos like "Interview stage + this week" | 📋 Planned |
-| **Analytics dashboard** | Applications per week, interview conversion rate, response time distribution | 📋 Planned |
-| **Calendar view** | Interview dates extracted from emails with one-click Google Calendar add | 📋 Planned |
-| **Custom status labels** | Define your own pipeline stages like Phone Screen, Take-home, or Final Round | 📋 Planned |
-| **Outlook / Microsoft Graph API** | Same read-only OAuth flow and parser pipeline with zero-server architecture | 📋 Planned |
-| **PWA install** | Manifest and service worker. Already offline, just needs the install layer | 📋 Planned |
-| **In-app changelog** | Release notes shown on first load after update | 📋 Planned |
+| Feature                           | What                                                                         | Status         |
+| --------------------------------- | ---------------------------------------------------------------------------- | -------------- |
+| **Data export/import**            | JSON backup and restore so your data is never locked in                      | 🚧 In progress |
+| **Saved filter presets**          | Bookmark combos like "Interview stage + this week"                           | 📋 Planned     |
+| **Analytics dashboard**           | Applications per week, interview conversion rate, response time distribution | 📋 Planned     |
+| **Calendar view**                 | Interview dates extracted from emails with one-click Google Calendar add     | 📋 Planned     |
+| **Custom status labels**          | Define your own pipeline stages like Phone Screen, Take-home, or Final Round | 📋 Planned     |
+| **Outlook / Microsoft Graph API** | Same read-only OAuth flow and parser pipeline with zero-server architecture  | 📋 Planned     |
+| **PWA install**                   | Manifest and service worker. Already offline, just needs the install layer   | 📋 Planned     |
+| **In-app changelog**              | Release notes shown on first load after update                               | 📋 Planned     |
 
 **Architectural non-goals:** Push notifications, cross-device sync, and server-side ML will never ship. Any feature that requires a backend is out of scope.
 
 ---
 
-## Quick Start
+## Try It Now
+
+The fastest way to use ejobtrack is on the live site - no setup, no configuration, no server.
+
+**[→ ejobtrack.ralphabejuela.com](https://ejobtrack.ralphabejuela.com)**
+
+Sign in with Google, and the app scans your inbox automatically. Your emails, tokens, and data never leave your browser. You can open DevTools and verify this yourself.
+
+---
+
+## Self-Hosting
+
+You don't need this to use ejobtrack. Only follow these steps if you want to run your own instance instead of using the live site above.
 
 ```bash
 git clone https://github.com/Ralph-Abejuela/ejobtrack.git
