@@ -18,6 +18,7 @@ import { enqueue, clearQueue, getQueueSize } from "@/lib/retry-queue";
 import { useRetryLoop } from "@/lib/use-retry-loop";
 import { classifyEmail } from "@/lib/classify-email";
 import type { JobApplication } from "@/lib/jobs/types";
+import { toast } from "sonner";
 import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
 import { capture } from "./analytics";
 import { logger } from "./logger";
@@ -42,6 +43,8 @@ interface JobPollerState {
 	queueSize: number;
 	/** Retry loop is actively processing */
 	retryInProgress: boolean;
+	/** No more older emails to load — reached inbox beginning */
+	atEnd: boolean;
 }
 
 /** Epoch ms → YYYY/MM/DD for Gmail search. */
@@ -262,6 +265,7 @@ export function useJobPoller() {
 		batchTotal: 0,
 		queueSize: 0,
 		retryInProgress: false,
+		atEnd: false,
 	});
 
 	const pollingRef = useRef(false);
@@ -306,7 +310,7 @@ export function useJobPoller() {
 		async (
 			userEmail: string,
 			newJobs: number,
-			extraState?: Partial<Pick<JobPollerState, "oldestScanned">>,
+			extraState?: Partial<Pick<JobPollerState, "oldestScanned" | "atEnd">>,
 		) => {
 			await loadJobs();
 			const [scannedCount] = await Promise.all([getScannedCount(userEmail)]);
@@ -442,25 +446,72 @@ export function useJobPoller() {
 	}, [accessToken, userEmail, loadJobs, loadScanStats]);
 
 	/**
-	 * Load more: scan the next 50 emails older than the oldest cached.
+	 * Load more: scan the next PAGE_SIZE emails older than the oldest cached.
+	 *
+	 * Tries pageToken first (efficient). If token expired (API error), falls
+	 * back to a before:date query using the oldest known email timestamp.
+	 * Marks exhausted when no more results exist.
 	 */
 	const loadMore = useCallback(async () => {
 		if (!accessToken || !userEmail || pollingRef.current) return;
 
-		const crawl = await getCrawlState(userEmail);
-		if (!crawl?.nextPageToken) return;
+		const crawl = getCrawlState(userEmail);
+		if (crawl.exhausted) return;
 
 		pollingRef.current = true;
 		setState((s) => ({ ...s, syncing: true, syncError: null }));
 
 		try {
-			// Use nextPageToken from previous list to get the next page — no date query needed
-			const listRes = await listMessages(accessToken, {
-				maxResults: PAGE_SIZE,
-				pageToken: crawl.nextPageToken,
-			});
+			let listRes;
+			let usedFallback = false;
+
+			// 1. Try pageToken first (efficient, no overlap)
+			if (crawl.nextPageToken) {
+				try {
+					listRes = await listMessages(accessToken, {
+						maxResults: PAGE_SIZE,
+						pageToken: crawl.nextPageToken,
+					});
+				} catch (err) {
+					// Non-429 error → likely expired token, fall back to date-based
+					if (!(err instanceof RateLimitError)) {
+						if (crawl.oldestTs) {
+							// Use next-day boundary so same-day older emails aren't missed
+							listRes = await listMessages(accessToken, {
+								maxResults: PAGE_SIZE,
+								q: `before:${tsToGmailDate(crawl.oldestTs + 86400000)}`,
+							});
+							usedFallback = true;
+						} else {
+							throw err;
+						}
+					} else {
+						throw err;
+					}
+				}
+			} else if (crawl.oldestTs) {
+				// 2. No pageToken but have oldestTs → date-based direct
+				listRes = await listMessages(accessToken, {
+					maxResults: PAGE_SIZE,
+					q: `before:${tsToGmailDate(crawl.oldestTs + 86400000)}`,
+				});
+				usedFallback = true;
+			} else {
+				// 3. No pageToken and no oldestTs — nothing to load
+				setCrawlState(userEmail, { exhausted: true });
+				await finalizeBatch(userEmail, 0, { atEnd: true });
+				return;
+			}
 
 			const ids = listRes.messages.map((m) => m.id);
+
+			// No more emails — mark exhausted
+			if (ids.length === 0) {
+				setCrawlState(userEmail, { exhausted: true });
+				await finalizeBatch(userEmail, 0, { atEnd: true });
+				return;
+			}
+
 			const { newJobs, oldestTs } = await processEmails(
 				accessToken,
 				userEmail,
@@ -473,13 +524,29 @@ export function useJobPoller() {
 					})),
 			);
 
-			// Store next page token for subsequent loadMore calls
+			// When using fallback, don't store the returned pageToken (it will also expire).
+			// Next click uses before:date again (dedup via isScanned handles overlap).
+			const noMorePages = usedFallback
+				? !listRes.nextPageToken
+				: !listRes.nextPageToken &&
+					(oldestTs === null || oldestTs < 4102444800000); // before ~2100
+
+			// Notify when inbox fully loaded
+			if (noMorePages) {
+				toast("Reached beginning of inbox", {
+					position: "bottom-right",
+				});
+			}
+
 			await setCrawlState(userEmail, {
-				nextPageToken: listRes.nextPageToken ?? null,
+				nextPageToken: usedFallback
+					? crawl.nextPageToken
+					: (listRes.nextPageToken ?? null),
 				oldestTs:
 					oldestTs !== null
 						? Math.min(crawl.oldestTs ?? Infinity, oldestTs)
 						: crawl.oldestTs,
+				exhausted: noMorePages,
 			});
 
 			await finalizeBatch(userEmail, newJobs, {
@@ -490,6 +557,7 @@ export function useJobPoller() {
 							year: "numeric",
 						})
 					: null,
+				atEnd: noMorePages,
 			});
 		} catch (err) {
 			setState((s) => ({
@@ -580,6 +648,7 @@ interface CrawlState {
 	nextPageToken: string | null;
 	totalJobs: number;
 	totalEstimate: number;
+	exhausted: boolean;
 }
 
 function getCrawlState(userEmail: string): CrawlState {
@@ -596,6 +665,7 @@ function getCrawlState(userEmail: string): CrawlState {
 		nextPageToken: null,
 		totalJobs: 0,
 		totalEstimate: 0,
+		exhausted: false,
 	};
 }
 
@@ -604,7 +674,12 @@ function setCrawlState(
 	partial: Partial<
 		Pick<
 			CrawlState,
-			"newestTs" | "oldestTs" | "nextPageToken" | "totalJobs" | "totalEstimate"
+			| "newestTs"
+			| "oldestTs"
+			| "nextPageToken"
+			| "totalJobs"
+			| "totalEstimate"
+			| "exhausted"
 		>
 	>,
 ): void {
