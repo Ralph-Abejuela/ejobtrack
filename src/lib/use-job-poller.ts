@@ -6,7 +6,11 @@ import {
 	parseMessage,
 	RateLimitError,
 } from "@/lib/gmail";
-import { parseEmail, parseEmailPlatform } from "@/lib/jobs/registry";
+import {
+	parseEmail,
+	parseEmailPlatform,
+	isIgnoredSender,
+} from "@/lib/jobs/registry";
 import {
 	getAllJobs,
 	getStatusCounts,
@@ -130,8 +134,12 @@ async function processEmails(
 		// 1. Try platform-specific parsers (known job senders) first
 		let results = parseEmailPlatform(email);
 
-		// 2. No platform match — use ML to decide if this is a job email
+		// 2. No platform match — skip known non-job senders, then try ML
 		if (!results) {
+			if (isIgnoredSender(email.from)) {
+				await markScanned(userEmail, [email.id]);
+				continue;
+			}
 			const isJob = await classifyEmail(email.subject, email.body);
 			if (isJob === false) {
 				await markScanned(userEmail, [email.id]);

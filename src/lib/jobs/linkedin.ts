@@ -42,6 +42,18 @@ export const linkedinParser: JobPlatformParser = {
 	ignorePatterns: [
 		/people you may know|mutual connection|pymk|work anniversary|congratulate|profile views|\badd\s+[A-Z][a-z]+\s/i,
 	],
+	// ponytail: all entries have spaces → regex against full from header
+	ignoreAddresses: [
+		"LinkedIn <jobs-listings@linkedin.com>",
+		".*<linkedin@em.linkedin.com>",
+		"LinkedIn <updates-noreply@linkedin.com>",
+		"LinkedIn <billing-noreply@linkedin.com>",
+		"LinkedIn <career-interests-noreply@linkedin.com>",
+		"LinkedIn <messages-noreply@linkedin.com>",
+		"LinkedIn <editors-noreply@linkedin.com>",
+		".*<invitations@linkedin.com>",
+		"LinkedIn <linkedin@e.linkedin.com>",
+	],
 
 	parse(email) {
 		const { subject, snippet, body, bodyClean } = email;

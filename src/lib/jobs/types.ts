@@ -71,6 +71,13 @@ export interface JobPlatformParser {
 	 */
 	ignorePatterns?: RegExp[];
 	/**
+	 * Email sender addresses / patterns to ignore entirely.
+	 * If entry is a RegExp or contains a space (full "Name <email>" format),
+	 * it is tested against the full email.from header. Otherwise it matches via
+	 * includes() against the extracted email address.
+	 */
+	ignoreAddresses?: (string | RegExp)[];
+	/**
 	 * Parse a full email body + snippet into one or more JobApplication records.
 	 * Return null if this email isn't a job application update.
 	 * Return an array for bulk emails (e.g. weekly activity summaries with multiple jobs).

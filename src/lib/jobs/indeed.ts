@@ -16,6 +16,7 @@ import { JobPlatform, JobStatus, type JobPlatformParser } from "./types";
 export const indeedParser: JobPlatformParser = {
 	platform: JobPlatform.INDEED,
 	fromAddresses: ["indeedapply@indeed.com", "noreply@indeed.com"],
+	ignoreAddresses: [],
 
 	parse(email) {
 		const { subject } = email;

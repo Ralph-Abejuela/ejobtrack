@@ -1,6 +1,10 @@
 import { useEffect, useRef, useCallback } from "react";
 import { getMessage, parseMessage, RateLimitError } from "@/lib/gmail";
-import { parseEmail, parseEmailPlatform } from "@/lib/jobs/registry";
+import {
+	parseEmail,
+	parseEmailPlatform,
+	isIgnoredSender,
+} from "@/lib/jobs/registry";
 import { getAllJobs, storeJob, addToDuplicateIndex } from "@/lib/jobs-db";
 import { markScanned, isScanned } from "@/lib/jobs-cache";
 import { classifyEmail } from "@/lib/classify-email";
@@ -86,8 +90,14 @@ export function useRetryLoop(
 					// 1. Try platform-specific parsers first
 					let results = parseEmailPlatform(email);
 
-					// 2. No platform match — use ML
+					// 2. No platform match — skip known non-job senders, then try ML
 					if (!results) {
+						if (isIgnoredSender(email.from)) {
+							logger.log("retry", `${entry.emailId} ignored sender, skipping`);
+							await markScanned(userEmail, [email.id]);
+							removeEntry(userEmail, entry.emailId);
+							continue;
+						}
 						const isJob = await classifyEmail(email.subject, email.body);
 						if (isJob === false) {
 							logger.log("retry", `${entry.emailId} not a job, skipping`);

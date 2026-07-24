@@ -325,6 +325,7 @@ function scoreStatus(subject: string, body: string): JobStatus {
 export const genericParser: JobPlatformParser = {
 	platform: "generic",
 	fromAddresses: [], // Matches all senders — invoked as fallback
+	ignoreAddresses: [],
 	parse(email) {
 		// Merge bodyClean (sanitized HTML) into body for richer text scanning
 		const richBody = email.bodyClean

@@ -29,6 +29,12 @@ export const jobstreetParser: JobPlatformParser = {
 	ignorePatterns: [
 		/is still accepting applications|don't forget to (?:submit|apply)|complete the application you have started|application started/i,
 	],
+	// ponytail: all entries have spaces → regex against full from header
+	ignoreAddresses: [
+		"Jobstreet Reminders <noreply@e.jobstreet.com>",
+		"Jobstreet Onboarding <noreply@e.jobstreet.com>",
+		"LiNa Recommendations <noreply@e.jobstreet.com>",
+	],
 
 	parse(email) {
 		// ── Bulk activity summary ──

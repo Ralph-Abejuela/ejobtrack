@@ -149,8 +149,17 @@ export async function classifyEmail(
 	if (!_classify) return null; // Still loading or errored — fall back
 
 	try {
-		const text = `${subject}\n${body}`.slice(0, 512);
+		// ponytail: strip URLs (HTML email bodies carry image URLs that eat
+		// the char budget) + wider window — rejection text often lands after
+		// salutation + "thank you for applying" preamble
+		const text = `${subject}\n${body}`
+			.replace(/https?:\/\/\S+/g, "")
+			.slice(0, 1024);
 		const result = await _classify(text);
+		logger.log(
+			"classify-test",
+			`sub: ${subject} |||| label: ${result[0].label}`,
+		);
 		return JOB_LABELS.has(result[0].label);
 	} catch {
 		return null; // Inference failed — fall back
