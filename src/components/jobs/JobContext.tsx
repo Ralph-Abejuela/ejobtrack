@@ -100,7 +100,7 @@ interface JobContextValue {
 const JobContext = createContext<JobContextValue | null>(null);
 
 export function JobProvider({ children }: { children: ReactNode }) {
-	const { user, accessToken } = useAuth();
+	const { user, accessToken, refreshToken } = useAuth();
 	const { jobs, statusCounts, loaded, state, loadMore, reload } =
 		useJobPoller();
 
@@ -325,7 +325,13 @@ export function JobProvider({ children }: { children: ReactNode }) {
 				}
 
 				// 2. Cache miss — fetch from Gmail API
-				const msg = await getMessage(accessToken, emailId);
+				const msg = await getMessage(
+					accessToken,
+					emailId,
+					"full",
+					undefined,
+					refreshToken ?? undefined,
+				);
 				if (lastFetchRef.current !== emailId) return;
 				const parsed = parseMessage(msg);
 				const data: SelectedEmail = {

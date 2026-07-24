@@ -25,6 +25,7 @@ export function useRetryLoop(
 		onProgress: (processed: number, total: number) => void;
 		onDone: () => void;
 	},
+	onUnauthorized?: () => Promise<string | null>,
 ): void {
 	const processingRef = useRef(false);
 
@@ -59,7 +60,13 @@ export function useRetryLoop(
 				opts.onProgress(doneCount, pending.length);
 
 				try {
-					const msg = await getMessage(accessToken, entry.emailId, "full");
+					const msg = await getMessage(
+						accessToken,
+						entry.emailId,
+						"full",
+						undefined,
+						onUnauthorized,
+					);
 					const email = parseMessage(msg);
 
 					logger.log(

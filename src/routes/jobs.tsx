@@ -1,6 +1,7 @@
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import { z } from "zod";
 import { useAuth } from "@/lib/auth";
+import { ModelLoadingBanner } from "@/components/jobs/ModelLoadingBanner";
 import { useJobContext, JobProvider } from "@/components/jobs/JobContext";
 import { undoMerge, mergeIntoNew } from "@/lib/jobs-db";
 import HiddenJobsPanel from "@/components/jobs/HiddenJobsPanel";
@@ -503,6 +504,8 @@ function JobsContent() {
 					<AlertDescription>{state.syncError}</AlertDescription>
 				</Alert>
 			)}
+
+			<ModelLoadingBanner />
 
 			<div className="flex items-center gap-2">
 				<Sheet>

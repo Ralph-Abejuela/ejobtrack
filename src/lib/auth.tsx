@@ -7,9 +7,7 @@ import {
 	useCallback,
 	type ReactNode,
 	useRef,
-	useEffect,
 } from "react";
-import { setOnUnauthorized } from "./gmail";
 import { capture, identifyUser } from "./analytics";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -36,6 +34,8 @@ interface AuthContextValue extends AuthState {
 	signOut: () => void;
 	/** Sign in with Google — single OAuth popup for both auth + Gmail scope */
 	signIn: () => Promise<string | null>;
+	/** Refresh OAuth access token when 401 is received from Gmail API */
+	refreshToken: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -177,7 +177,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	// --- Sign out ---
 	const signOut = useCallback(() => {
 		sessionStorage.removeItem(SESSION_KEY);
-		setOnUnauthorized(null);
 
 		// Revoke OAuth tokens
 		if (state.accessToken && typeof google !== "undefined") {
@@ -245,12 +244,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		return promise;
 	}, [signOut, persist]);
 
-	useEffect(() => {
-		setOnUnauthorized(refreshAccessToken);
-	}, [refreshAccessToken]);
-
 	return (
-		<AuthContext.Provider value={{ ...state, signOut, signIn }}>
+		<AuthContext.Provider
+			value={{ ...state, signOut, signIn, refreshToken: refreshAccessToken }}
+		>
 			{children}
 		</AuthContext.Provider>
 	);

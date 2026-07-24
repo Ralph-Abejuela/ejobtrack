@@ -60,6 +60,7 @@ async function processEmails(
 	userEmail: string,
 	ids: string[],
 	onProgress?: (processed: number, total: number) => void,
+	onUnauthorized?: () => Promise<string | null>,
 ): Promise<{
 	newJobs: number;
 	oldestTs: number | null;
@@ -70,7 +71,9 @@ async function processEmails(
 	const results = await Promise.all(
 		ids.map(async (id) => {
 			try {
-				const email = parseMessage(await getMessage(accessToken, id, "full"));
+				const email = parseMessage(
+					await getMessage(accessToken, id, "full", undefined, onUnauthorized),
+				);
 				return { type: "success" as const, email };
 			} catch (err) {
 				if (err instanceof RateLimitError) {
@@ -248,7 +251,7 @@ async function processEmails(
 }
 
 export function useJobPoller() {
-	const { user, accessToken } = useAuth();
+	const { user, accessToken, refreshToken } = useAuth();
 	const userEmail = user?.email ?? "";
 
 	const [jobs, setJobs] = useState<JobApplication[]>([]);
@@ -345,6 +348,7 @@ export function useJobPoller() {
 			// Single page on initial sync — rest fetched progressively via loadMore
 			const listRes = await listMessages(accessToken, {
 				maxResults: PAGE_SIZE,
+				onUnauthorized: refreshToken ?? undefined,
 			});
 			const ids = listRes.messages.map((m) => m.id);
 			const { newJobs, oldestTs, newestTs } = await processEmails(
@@ -357,6 +361,7 @@ export function useJobPoller() {
 						batchProcessed: processed,
 						batchTotal: total,
 					})),
+				refreshToken ?? undefined,
 			);
 
 			await setCrawlState(userEmail, {
@@ -409,6 +414,7 @@ export function useJobPoller() {
 			const listRes = await listMessages(accessToken, {
 				maxResults: PAGE_SIZE,
 				q: `after:${tsToGmailDate(crawl.newestTs - 86400000)}`,
+				onUnauthorized: refreshToken ?? undefined,
 			});
 
 			const ids = listRes.messages.map((m) => m.id);
@@ -422,6 +428,7 @@ export function useJobPoller() {
 						batchProcessed: processed,
 						batchTotal: total,
 					})),
+				refreshToken ?? undefined,
 			);
 
 			if (newestTs !== null) {
@@ -471,6 +478,7 @@ export function useJobPoller() {
 					listRes = await listMessages(accessToken, {
 						maxResults: PAGE_SIZE,
 						pageToken: crawl.nextPageToken,
+						onUnauthorized: refreshToken ?? undefined,
 					});
 				} catch (err) {
 					// Non-429 error → likely expired token, fall back to date-based
@@ -480,6 +488,7 @@ export function useJobPoller() {
 							listRes = await listMessages(accessToken, {
 								maxResults: PAGE_SIZE,
 								q: `before:${tsToGmailDate(crawl.oldestTs + 86400000)}`,
+								onUnauthorized: refreshToken ?? undefined,
 							});
 							usedFallback = true;
 						} else {
@@ -494,6 +503,7 @@ export function useJobPoller() {
 				listRes = await listMessages(accessToken, {
 					maxResults: PAGE_SIZE,
 					q: `before:${tsToGmailDate(crawl.oldestTs + 86400000)}`,
+					onUnauthorized: refreshToken ?? undefined,
 				});
 				usedFallback = true;
 			} else {
@@ -522,6 +532,7 @@ export function useJobPoller() {
 						batchProcessed: processed,
 						batchTotal: total,
 					})),
+				refreshToken ?? undefined,
 			);
 
 			// When using fallback, don't store the returned pageToken (it will also expire).
@@ -597,25 +608,30 @@ export function useJobPoller() {
 	}, [accessToken, userEmail, checkNewEmails]);
 
 	// Retry loop — background processor for rate-limited message fetches
-	useRetryLoop(accessToken, userEmail, {
-		onProgress: (processed, total) =>
-			setState((s) => ({
-				...s,
-				batchProcessed: processed,
-				batchTotal: total,
-				retryInProgress: true,
-			})),
-		onDone: () => {
-			loadJobs();
-			loadScanStats();
-			setState((s) => ({
-				...s,
-				batchProcessed: 0,
-				batchTotal: 0,
-				retryInProgress: false,
-			}));
+	useRetryLoop(
+		accessToken,
+		userEmail,
+		{
+			onProgress: (processed, total) =>
+				setState((s) => ({
+					...s,
+					batchProcessed: processed,
+					batchTotal: total,
+					retryInProgress: true,
+				})),
+			onDone: () => {
+				loadJobs();
+				loadScanStats();
+				setState((s) => ({
+					...s,
+					batchProcessed: 0,
+					batchTotal: 0,
+					retryInProgress: false,
+				}));
+			},
 		},
-	});
+		refreshToken ?? undefined,
+	);
 
 	// Clear retry queue on sign-out
 	useEffect(() => {

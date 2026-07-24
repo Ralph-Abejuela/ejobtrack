@@ -17,25 +17,13 @@ export class RateLimitError extends Error {
 }
 
 /**
- * Called when any Gmail API call gets a 401 response.
- * Should try to refresh the token and return a new one,
- * or return null if refresh fails (triggers sign-out).
- */
-let _onUnauthorized: (() => Promise<string | null>) | null = null;
-
-export function setOnUnauthorized(
-	cb: (() => Promise<string | null>) | null,
-): void {
-	_onUnauthorized = cb;
-}
-
-/**
  * Fetch wrapper that auto-retries once on 401 after token refresh.
  */
 async function fetchWithRetry(
 	url: string,
 	accessToken: string,
 	options?: RequestInit,
+	onUnauthorized?: () => Promise<string | null>,
 ): Promise<Response> {
 	const headers = {
 		Authorization: `Bearer ${accessToken}`,
@@ -52,8 +40,8 @@ async function fetchWithRetry(
 		throw new RateLimitError(`Gmail API 429: ${body}`, retryAfter);
 	}
 
-	if (res.status === 401 && _onUnauthorized) {
-		const newToken = await _onUnauthorized();
+	if (res.status === 401 && onUnauthorized) {
+		const newToken = await onUnauthorized();
 		if (newToken) {
 			headers.Authorization = `Bearer ${newToken}`;
 			res = await fetch(url, { ...options, headers });
@@ -227,6 +215,7 @@ export async function listMessages(
 		pageToken?: string | null;
 		q?: string;
 		labelIds?: string[];
+		onUnauthorized?: () => Promise<string | null>;
 	} = {},
 ): Promise<GmailListResponse> {
 	const params = new URLSearchParams();
@@ -238,7 +227,12 @@ export async function listMessages(
 	}
 
 	const url = `${BASE_URL}/messages?${params.toString()}`;
-	const res = await fetchWithRetry(url, accessToken);
+	const res = await fetchWithRetry(
+		url,
+		accessToken,
+		undefined,
+		opts.onUnauthorized,
+	);
 
 	if (!res.ok) {
 		const err = await res.text();
@@ -259,13 +253,14 @@ export async function getMessage(
 	messageId: string,
 	format: "full" | "metadata" | "minimal" | "raw" = "full",
 	metadataHeaders?: string[],
+	onUnauthorized?: () => Promise<string | null>,
 ): Promise<GmailMessage> {
 	const params = new URLSearchParams({ format });
 	if (metadataHeaders?.length) {
 		metadataHeaders.forEach((h) => params.append("metadataHeaders", h));
 	}
 	const url = `${BASE_URL}/messages/${messageId}?${params.toString()}`;
-	const res = await fetchWithRetry(url, accessToken);
+	const res = await fetchWithRetry(url, accessToken, undefined, onUnauthorized);
 
 	if (!res.ok) {
 		const err = await res.text();
