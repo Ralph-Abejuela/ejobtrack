@@ -23,7 +23,7 @@
     <img src="https://img.shields.io/badge/Live-Cloudflare_Pages-2ea44f" alt="Live">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+    <img src="https://img.shields.io/badge/license-Apache%202-green" alt="License">
   </a>
   <a href="https://github.com/Ralph-Abejuela/ejobtrack/issues">
     <img src="https://img.shields.io/github/issues/Ralph-Abejuela/ejobtrack" alt="Issues">
@@ -195,7 +195,7 @@ PRs welcome. Add your platform parser as one file in `src/lib/jobs/`. See `gener
 
 ## License
 
-Apache License. See [LICENSE](LICENSE).
+Apache 2 License. See [LICENSE](LICENSE).
 
 ---
 
