@@ -400,19 +400,14 @@ export function useJobPoller() {
 	}, [accessToken, userEmail, loadJobs, loadScanStats]);
 
 	/**
-	 * Hourly poll: check for new emails since newestTs.
-	 * Only runs if >1h since last check.
+	 * Check for new emails since newestTs.
+	 * Callers manage their own throttle; this only guards against concurrent runs.
 	 */
 	const checkNewEmails = useCallback(async () => {
 		if (!accessToken || !userEmail || pollingRef.current) return;
 
 		const crawl = await getCrawlState(userEmail);
 		if (!crawl?.newestTs) return;
-
-		const lastCheck = Number(
-			localStorage.getItem(`job_forward_ms_${userEmail}`) ?? "0",
-		);
-		if (Date.now() - lastCheck < 15 * 60 * 1000) return;
 
 		pollingRef.current = true;
 		setState((s) => ({ ...s, syncing: true, syncError: null }));
@@ -445,7 +440,6 @@ export function useJobPoller() {
 				});
 			}
 
-			localStorage.setItem(`job_forward_ms_${userEmail}`, String(Date.now()));
 			await finalizeBatch(userEmail, newJobs);
 		} catch (err) {
 			setState((s) => ({
@@ -587,8 +581,17 @@ export function useJobPoller() {
 			}));
 		} finally {
 			pollingRef.current = false;
+			// ponytail: also check new emails after loading older, but only if >15 min
+			// since last forward check
+			const lastCheck = Number(
+				localStorage.getItem(`job_forward_ms_${userEmail}`) ?? "0",
+			);
+			if (Date.now() - lastCheck >= 15 * 60 * 1000) {
+				localStorage.setItem(`job_forward_ms_${userEmail}`, String(Date.now()));
+				checkNewEmails();
+			}
 		}
-	}, [accessToken, userEmail, loadJobs, loadScanStats]);
+	}, [accessToken, userEmail, loadJobs, loadScanStats, checkNewEmails]);
 
 	// --- Initial sync on mount if never synced ---
 	useEffect(() => {
@@ -599,17 +602,35 @@ export function useJobPoller() {
 		}
 	}, [accessToken, userEmail, initialSync]);
 
+	// 15-min interval for new-email polling (manages its own cooldown)
+	// ponytail: skip when tab hidden — no Gmail API calls in background
 	useEffect(() => {
 		if (!accessToken || !userEmail) return;
-		const id = setInterval(() => checkNewEmails(), 15 * 60 * 1000);
+		const id = setInterval(
+			() => {
+				if (document.visibilityState === "hidden") return;
+				const lastCheck = Number(
+					localStorage.getItem(`job_forward_ms_${userEmail}`) ?? "0",
+				);
+				if (Date.now() - lastCheck < 15 * 60 * 1000) return;
+				localStorage.setItem(`job_forward_ms_${userEmail}`, String(Date.now()));
+				checkNewEmails();
+			},
+			15 * 60 * 1000,
+		);
 		return () => clearInterval(id);
 	}, [accessToken, userEmail, checkNewEmails]);
 
-	// Check for new emails when tab regains focus
+	// Check for new emails when tab regains focus (1-min ref throttle)
+	const focusCheckRef = useRef(0);
 	useEffect(() => {
 		if (!accessToken || !userEmail) return;
 		const onFocus = () => {
-			if (document.visibilityState === "visible") checkNewEmails();
+			if (document.visibilityState !== "visible") return;
+			if (Date.now() - focusCheckRef.current < 60_000) return;
+			focusCheckRef.current = Date.now();
+			localStorage.setItem(`job_forward_ms_${userEmail}`, String(Date.now()));
+			checkNewEmails();
 		};
 		document.addEventListener("visibilitychange", onFocus);
 		return () => document.removeEventListener("visibilitychange", onFocus);

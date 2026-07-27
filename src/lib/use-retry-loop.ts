@@ -36,6 +36,9 @@ export function useRetryLoop(
 	const processPending = useCallback(async () => {
 		if (!accessToken || !userEmail) return;
 		if (processingRef.current) return;
+		// ponytail: don't make Gmail API calls while tab is hidden —
+		// token refresh popups in background tabs are confusing
+		if (document.visibilityState === "hidden") return;
 
 		const pending = getPendingEntries(userEmail);
 		if (pending.length === 0) return;
@@ -242,9 +245,16 @@ export function useRetryLoop(
 		const initialTimer = setTimeout(() => processPending(), 15_000);
 		const interval = setInterval(processPending, POLL_INTERVAL_MS);
 
+		// Resume processing when tab becomes visible again
+		const onVisible = () => {
+			if (document.visibilityState === "visible") processPending();
+		};
+		document.addEventListener("visibilitychange", onVisible);
+
 		return () => {
 			clearTimeout(initialTimer);
 			clearInterval(interval);
+			document.removeEventListener("visibilitychange", onVisible);
 		};
 	}, [accessToken, userEmail, processPending]);
 }
