@@ -28,6 +28,118 @@ function PrivacyPage() {
 			</section>
 
 			<section className="space-y-3">
+				<h2 className="text-lg font-semibold">
+					Google User Data Access (gmail.readonly)
+				</h2>
+				<p>
+					ejobtrack requests the Google API scope{" "}
+					<code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+						https://www.googleapis.com/auth/gmail.readonly
+					</code>{" "}
+					(read-only access to your Gmail messages). This is a restricted scope.
+					With your explicit consent, ejobtrack accesses the following Google
+					user data:
+				</p>
+				<ul className="list-disc pl-6 text-sm text-muted-foreground space-y-1">
+					<li>Email metadata and headers (sender, recipient, date, subject)</li>
+					<li>Email snippets (preview text shown in message lists)</li>
+					<li>Email message bodies, fetched only when you expand an email</li>
+					<li>
+						Your Google account email address (used to scope your local data)
+					</li>
+				</ul>
+				<p>
+					ejobtrack does <strong>not</strong> access: your Gmail settings, other
+					Google products (Drive, Contacts, Calendar, Photos), or any data from
+					accounts other than the one you signed in with.
+				</p>
+			</section>
+
+			<section className="space-y-3">
+				<h2 className="text-lg font-semibold">How Google User Data Is Used</h2>
+				<p>
+					The Google user data accessed via the gmail.readonly scope is used
+					solely to provide the core functionality you request: identifying and
+					tracking job applications in your inbox. Specifically, ejobtrack uses
+					this data to:
+				</p>
+				<ul className="list-disc pl-6 text-sm text-muted-foreground space-y-1">
+					<li>Scan incoming email for job application confirmations</li>
+					<li>
+						Track status changes (application received, viewed, interview,
+						offer, rejection)
+					</li>
+					<li>Build and display your personal job application dashboard</li>
+					<li>
+						Show email content in the timeline view when you expand an email
+					</li>
+				</ul>
+				<p>
+					Your Gmail data is <strong>never</strong> used for advertising, never
+					sold, never shared with third parties, and never used to train AI or
+					machine learning models.
+				</p>
+			</section>
+
+			<section className="space-y-3">
+				<h2 className="text-lg font-semibold">Data Protection Mechanisms</h2>
+				<p>
+					ejobtrack applies the following protections to your Google user data:
+				</p>
+				<ul className="list-disc pl-6 text-sm text-muted-foreground space-y-1">
+					<li>
+						<strong>No backend server.</strong> ejobtrack has no server
+						component. Your email data is never transmitted to or stored on any
+						server owned or operated by ejobtrack.
+					</li>
+					<li>
+						<strong>Encryption in transit.</strong> All communication with
+						Google services uses HTTPS/TLS. The app itself is served over HTTPS.
+					</li>
+					<li>
+						<strong>Local-only storage.</strong> Retrieved emails are stored
+						only in your browser's IndexedDB, isolated per Google account, and
+						never leave your device.
+					</li>
+					<li>
+						<strong>On-device processing.</strong> Email classification runs an
+						ML model entirely in your browser; no email content is sent to
+						external AI services.
+					</li>
+					<li>
+						<strong>Anonymized analytics.</strong> If analytics are enabled,
+						email addresses are SHA-256 hashed before transmission to PostHog;
+						no email content is included.
+					</li>
+					<li>
+						<strong>Revocation.</strong> You can revoke ejobtrack's access at
+						any time from your Google Account security settings, or by signing
+						out in the app.
+					</li>
+				</ul>
+			</section>
+
+			<section className="space-y-3">
+				<h2 className="text-lg font-semibold">Google Limited Use Disclosure</h2>
+				<p>
+					ejobtrack's use and transfer of information received from Google APIs
+					will adhere to the{" "}
+					<a
+						href="https://developers.google.com/terms/api-services-user-data-policy"
+						className="text-primary hover:underline"
+						target="_blank"
+						rel="noreferrer"
+					>
+						Google API Services User Data Policy
+					</a>
+					, including the Limited Use requirements. Your data is used only to
+					provide and improve the features described in this policy, is never
+					transferred to any third party, and is never used for advertising or
+					other unrelated purposes.
+				</p>
+			</section>
+
+			<section className="space-y-3">
 				<h2 className="text-lg font-semibold">Gmail Access</h2>
 				<p>
 					With your explicit consent, ejobtrack requests read-only access to
