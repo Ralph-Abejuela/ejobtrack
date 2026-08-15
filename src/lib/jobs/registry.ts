@@ -55,6 +55,7 @@ const ALL_IGNORE_ENTRIES: (string | RegExp)[] = [
  *   3. Plain substring — fallback includes check against full header
  */
 export function isIgnoredSender(from: string): boolean {
+	if (!from) return false;
 	const entries = ALL_IGNORE_ENTRIES;
 	const trimmed = from.trim();
 	const emailAddr = extractEmail(trimmed);

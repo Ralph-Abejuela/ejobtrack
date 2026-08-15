@@ -1,6 +1,7 @@
 import type { ParsedEmail } from "@/lib/gmail";
 import type { JobApplication } from "./types";
 import { parseEmail, parseEmailPlatform, isIgnoredSender } from "./registry";
+import { extractEmail } from "./generic";
 import { classifyEmail } from "@/lib/classify-email";
 import { storeJob, addToDuplicateIndex } from "@/lib/jobs-db";
 import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
@@ -21,6 +22,16 @@ export async function ingestEmail(
 	userEmail: string,
 	jobsById: Map<string, JobApplication>,
 ): Promise<{ newJobs: number }> {
+	// Skip mail the user sent — replies to job emails quote the original body,
+	// which trips the ML/generic parser into classifying them as applications.
+	const fromAddr = extractEmail(email.from);
+	if (
+		fromAddr === userEmail.toLowerCase() ||
+		email.labelIds?.includes("SENT")
+	) {
+		return { newJobs: 0 };
+	}
+
 	// 1. Try platform-specific parsers (known job senders) first
 	let results = parseEmailPlatform(email);
 
