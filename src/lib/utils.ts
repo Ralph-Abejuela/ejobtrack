@@ -52,6 +52,7 @@ export function stringSimilarity(a: string, b: string): number {
 
 export function formatTimeAgo(ms: number): string {
 	const delta = Date.now() - ms;
+	if (!Number.isFinite(delta) || delta < 0) return "just now";
 	const mins = Math.floor(delta / 60000);
 	if (mins < 1) return "just now";
 	if (mins < 60) return `${mins}m ago`;
