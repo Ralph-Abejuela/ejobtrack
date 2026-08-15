@@ -80,7 +80,7 @@ export default function JobList({
 				<EmptyHeader>
 					<EmptyTitle>No job applications yet</EmptyTitle>
 					<EmptyDescription>
-						Click Load Older Emails to fetch from your inbox.
+						Click Load More to fetch from your inbox.
 					</EmptyDescription>
 				</EmptyHeader>
 			</Empty>

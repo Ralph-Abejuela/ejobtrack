@@ -1,19 +1,12 @@
 import { useEffect, useRef, useCallback } from "react";
 import { getMessage, parseMessage, RateLimitError } from "@/lib/gmail";
-import {
-	parseEmail,
-	parseEmailPlatform,
-	isIgnoredSender,
-} from "@/lib/jobs/registry";
-import { getAllJobs, storeJob, addToDuplicateIndex } from "@/lib/jobs-db";
+import { getAllJobs } from "@/lib/jobs-db";
 import { markScanned, isScanned } from "@/lib/jobs-cache";
-import { classifyEmail } from "@/lib/classify-email";
+import { ingestEmail } from "@/lib/jobs/ingest";
 import { storeEmails } from "@/lib/email-cache";
-import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
 import { getPendingEntries, removeEntry, bumpRetry } from "@/lib/retry-queue";
 import { capture } from "./analytics";
 import { logger } from "./logger";
-import type { JobApplication } from "@/lib/jobs/types";
 
 const POLL_INTERVAL_MS = 10_000; // check queue every 10s
 
@@ -58,7 +51,9 @@ export function useRetryLoop(
 		processingRef.current = true;
 
 		try {
-			const existing = await getAllJobs(userEmail);
+			const jobsById = new Map(
+				(await getAllJobs(userEmail)).map((j) => [j.id, j]),
+			);
 
 			let doneCount = 0;
 
@@ -90,119 +85,8 @@ export function useRetryLoop(
 						continue;
 					}
 
-					// 1. Try platform-specific parsers first
-					let results = parseEmailPlatform(email);
-
-					// 2. No platform match — skip known non-job senders, then try ML
-					if (!results) {
-						if (isIgnoredSender(email.from)) {
-							logger.log("retry", `${entry.emailId} ignored sender, skipping`);
-							await markScanned(userEmail, [email.id]);
-							removeEntry(userEmail, entry.emailId);
-							continue;
-						}
-						const isJob = await classifyEmail(email.subject, email.body);
-						if (isJob === false) {
-							logger.log("retry", `${entry.emailId} not a job, skipping`);
-							await markScanned(userEmail, [email.id]);
-							removeEntry(userEmail, entry.emailId);
-							continue;
-						}
-						results = parseEmail(email);
-					}
-					if (!results) {
-						await markScanned(userEmail, [email.id]);
-						removeEntry(userEmail, entry.emailId);
-						continue;
-					}
-
-					for (const result of results) {
-						const normalizedCompany = result.company
-							.toLowerCase()
-							.replace(/\s+/g, " ");
-						const normalizedTitle = result.jobTitle
-							.toLowerCase()
-							.replace(/\s+/g, " ");
-						const jobId = `${userEmail}:${result.platform}:${normalizedCompany}:${normalizedTitle}`;
-
-						// Exact match by ID
-						let dup = existing.find((j) => j.id === jobId);
-
-						// Fuzzy match: same platform + same title, similar company
-						if (!dup) {
-							const fuzzy = existing.filter(
-								(j) =>
-									j.platform === result.platform &&
-									j.jobTitle.toLowerCase().replace(/\s+/g, " ") ===
-										normalizedTitle &&
-									j.id !== jobId &&
-									stringSimilarity(j.company, result.company) >=
-										COMPANY_SIMILARITY_THRESHOLD,
-							);
-							if (fuzzy.length > 0) {
-								fuzzy.sort((a, b) => b.company.length - a.company.length);
-								dup = fuzzy[0];
-								dup.company =
-									result.company.length > dup.company.length
-										? result.company
-										: dup.company;
-							}
-						}
-
-						if (dup) {
-							if (dup.emailId === email.id) continue;
-
-							const newTs = Number(email.internalDate);
-							const oldTs = new Date(dup.date).getTime();
-							const isNewer = newTs > oldTs;
-
-							dup.history = [
-								...dup.history,
-								{
-									status: result.status,
-									date: new Date(newTs).toISOString(),
-									emailId: email.id,
-								},
-							];
-
-							if (isNewer) {
-								dup.status = result.status;
-								dup.date = new Date(newTs).toISOString();
-								dup.emailId = email.id;
-								dup.subject = email.subject;
-								dup.snippet = email.snippet;
-								if (email.body) dup.body = email.body;
-								if (result.url) dup.url = result.url;
-							}
-
-							dup.updatedAt = Date.now();
-							await storeJob(dup);
-							await addToDuplicateIndex(userEmail, {
-								id: dup.id,
-								jobTitle: dup.jobTitle,
-							});
-						} else {
-							const newJob: JobApplication = {
-								...result,
-								id: jobId,
-								userEmail,
-								createdAt: Date.now(),
-								updatedAt: Date.now(),
-								history: [
-									{
-										status: result.status,
-										date: new Date(Number(email.internalDate)).toISOString(),
-										emailId: email.id,
-									},
-								],
-							} as JobApplication;
-							await storeJob(newJob);
-							await addToDuplicateIndex(userEmail, {
-								id: newJob.id,
-								jobTitle: newJob.jobTitle,
-							});
-						}
-					}
+					// Shared pipeline: parse → ignore → ML → dedup → store
+					await ingestEmail(email, userEmail, jobsById);
 
 					await markScanned(userEmail, [email.id]);
 					removeEntry(userEmail, entry.emailId);

@@ -2,46 +2,37 @@ import Dexie, { type EntityTable } from "dexie";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export interface JobCrawlState {
-	/** Primary key = userEmail */
-	userEmail: string;
-	/** Newest email internalDate seen (epoch ms) */
-	newestTs: number | null;
-	/** Oldest email internalDate seen (epoch ms) */
-	oldestTs: number | null;
-	/** Total unique jobs found across all cycles */
-	totalJobs: number;
-	/** When this cycle began (epoch ms) */
-	cycleStartedAt: number;
-	/** Emails scanned in the current cycle */
-	cycleScanned: number;
-}
-
 export interface JobScannedEmail {
 	/** Primary key = Gmail message id */
 	id: string;
 	userEmail: string;
 }
 
+// ponytail: crawl state (newestTs/oldestTs/cursor) lives in localStorage
+// (job_crawl_${userEmail} in use-job-poller.ts), not in this Dexie DB.
 const db = new Dexie("ejobtrack_job_crawl") as Dexie & {
-	state: EntityTable<JobCrawlState, "userEmail">;
 	scanned: EntityTable<JobScannedEmail, "id">;
 };
 
+// Version 1: scanned dedup table.
+// Version 2: cleared old scanned data — id key now includes userEmail prefix.
+// Version 3: dropped the unused `state` table (crawl state moved to localStorage).
 db.version(1).stores({
-	state: "userEmail",
 	scanned: "id, userEmail",
 });
 
-// Version 2: clear old scanned data — id key now includes userEmail prefix
 db.version(2)
 	.stores({
-		state: "userEmail",
 		scanned: "id, userEmail",
 	})
 	.upgrade(async (tx) => {
 		await tx.table("scanned").clear();
 	});
+
+db.version(3).stores({
+	state: null, // drop dead table
+	scanned: "id, userEmail",
+});
 
 /** Build a scoped primary key for scanned emails. */
 function scannedKey(userEmail: string, emailId: string): string {
