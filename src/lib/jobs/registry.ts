@@ -49,10 +49,10 @@ const ALL_IGNORE_ENTRIES: (string | RegExp)[] = [
 /**
  * Check whether a given From header matches any ignore entry.
  *
- * Matching rules per entry:
- *   - RegExp:        test against the full from header
- *   - string with a space: treat as a regex string, test against full from header
- *   - plain string:  extract email address from from, check with includes()
+ * Matching order per string entry:
+ *   1. Email address — exact or partial match against extracted email
+ *   2. Regex — if entry contains < or >, test as regex against full header
+ *   3. Plain substring — fallback includes check against full header
  */
 export function isIgnoredSender(from: string): boolean {
 	const entries = ALL_IGNORE_ENTRIES;
@@ -64,20 +64,19 @@ export function isIgnoredSender(from: string): boolean {
 			return entry.test(trimmed);
 		}
 		if (typeof entry === "string") {
-			// Contains a space → full "Name <email>" format → regex test
-			if (entry.includes(" ")) {
+			// 1. Email match — check against extracted email address
+			if (emailAddr && emailAddr.toLowerCase().includes(entry.toLowerCase())) {
+				return true;
+			}
+			// 2. Regex — entries with < or > treated as regex patterns
+			if (entry.includes("<") || entry.includes(">")) {
 				try {
-					return new RegExp(entry, "i").test(trimmed);
+					if (new RegExp(entry, "i").test(trimmed)) return true;
 				} catch {
-					// ponytail: fallback to exact full-header include if regex fails
-					return trimmed.toLowerCase().includes(entry.toLowerCase());
+					// regex failed — fall through to plain match
 				}
 			}
-			// Plain string — match against extracted email address via includes
-			if (emailAddr) {
-				return emailAddr.toLowerCase().includes(entry.toLowerCase());
-			}
-			// Last resort: match against full header
+			// 3. Plain substring — last resort
 			return trimmed.toLowerCase().includes(entry.toLowerCase());
 		}
 		return false;
