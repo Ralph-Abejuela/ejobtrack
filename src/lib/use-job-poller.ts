@@ -6,29 +6,24 @@ import {
 	parseMessage,
 	RateLimitError,
 } from "@/lib/gmail";
-import {
-	parseEmail,
-	parseEmailPlatform,
-	isIgnoredSender,
-} from "@/lib/jobs/registry";
-import {
-	getAllJobs,
-	getStatusCounts,
-	storeJob,
-	addToDuplicateIndex,
-} from "@/lib/jobs-db";
+import { getAllJobs, getStatusCounts } from "@/lib/jobs-db";
 import { markScanned, isScanned, getScannedCount } from "@/lib/jobs-cache";
 import { enqueue, clearQueue, getQueueSize } from "@/lib/retry-queue";
 import { useRetryLoop } from "@/lib/use-retry-loop";
-import { classifyEmail } from "@/lib/classify-email";
+import { ingestEmail } from "@/lib/jobs/ingest";
 import type { JobApplication } from "@/lib/jobs/types";
 import { toast } from "sonner";
-import { stringSimilarity, COMPANY_SIMILARITY_THRESHOLD } from "@/lib/utils";
 import { capture } from "./analytics";
 import { logger } from "./logger";
 import { storeEmails } from "@/lib/email-cache";
 
 const PAGE_SIZE = 25;
+/** Gate for the new-email pass: run only if last sync was >15 min ago. */
+const FORWARD_INTERVAL_MS = 15 * 60 * 1000;
+/** Pagination cursor lifetime — Gmail pageTokens go stale, re-derive after 2h. */
+const CURSOR_TTL_MS = 2 * 60 * 60 * 1000;
+/** ponytail: runaway guard for the new-email walk (1250 emails max per pass). */
+const MAX_FORWARD_PAGES = 50;
 
 interface JobPollerState {
 	syncing: boolean;
@@ -124,6 +119,9 @@ async function processEmails(
 	const scannedIds: string[] = [];
 	const total = emails.length;
 
+	// Load once, dedup against a mutable map so within-batch dups are caught
+	const jobsById = new Map((await getAllJobs(userEmail)).map((j) => [j.id, j]));
+
 	for (let i = 0; i < total; i++) {
 		const email = emails[i];
 		onProgress?.(i + 1, total);
@@ -131,119 +129,8 @@ async function processEmails(
 		if (await isScanned(userEmail, email.id)) continue;
 		scannedIds.push(email.id);
 
-		// 1. Try platform-specific parsers (known job senders) first
-		let results = parseEmailPlatform(email);
-
-		// 2. No platform match — skip known non-job senders, then try ML
-		if (!results) {
-			if (isIgnoredSender(email.from)) {
-				await markScanned(userEmail, [email.id]);
-				continue;
-			}
-			const isJob = await classifyEmail(email.subject, email.body);
-			if (isJob === false) {
-				await markScanned(userEmail, [email.id]);
-				continue;
-			}
-			// ML says it's a job — use generic/fallback parser
-			results = parseEmail(email);
-		}
-		if (!results) continue;
-
-		const existing = await getAllJobs(userEmail);
-
-		for (const result of results) {
-			const normalizedCompany = result.company
-				.toLowerCase()
-				.replace(/\s+/g, " ");
-			const normalizedTitle = result.jobTitle
-				.toLowerCase()
-				.replace(/\s+/g, " ");
-			const jobId = `${userEmail}:${result.platform}:${normalizedCompany}:${normalizedTitle}`;
-
-			// 1. Exact match by ID
-			let dup = existing.find((j) => j.id === jobId);
-
-			// 2. Fuzzy match: same platform + same title, different but similar company
-			if (!dup) {
-				const fuzzy = existing.filter(
-					(j) =>
-						j.platform === result.platform &&
-						j.jobTitle.toLowerCase().replace(/\s+/g, " ") === normalizedTitle &&
-						j.id !== jobId &&
-						stringSimilarity(j.company, result.company) >=
-							COMPANY_SIMILARITY_THRESHOLD,
-				);
-				if (fuzzy.length > 0) {
-					// Use the more complete company name
-					fuzzy.sort((a, b) => b.company.length - a.company.length);
-					dup = fuzzy[0];
-					// Update existing record with fuller company name
-					dup.company =
-						result.company.length > dup.company.length
-							? result.company
-							: dup.company;
-				}
-			}
-
-			if (dup) {
-				if (dup.emailId === email.id) continue;
-
-				const newTs = Number(email.internalDate);
-				const oldTs = new Date(dup.date).getTime();
-				const isNewer = newTs > oldTs;
-
-				// Always add to history
-				dup.history = [
-					...dup.history,
-					{
-						status: result.status,
-						date: new Date(newTs).toISOString(),
-						emailId: email.id,
-					},
-				];
-
-				if (isNewer) {
-					// Newer email — update status and fields
-					dup.status = result.status;
-					dup.date = new Date(newTs).toISOString();
-					dup.emailId = email.id;
-					dup.subject = email.subject;
-					dup.snippet = email.snippet;
-					if (email.body) dup.body = email.body;
-					if (result.url) dup.url = result.url;
-				}
-
-				dup.updatedAt = Date.now();
-				await storeJob(dup);
-				// Ensure duplicate index has this job
-				await addToDuplicateIndex(userEmail, {
-					id: dup.id,
-					jobTitle: dup.jobTitle,
-				});
-			} else {
-				const newJob = {
-					...result,
-					id: jobId,
-					userEmail,
-					createdAt: Date.now(),
-					updatedAt: Date.now(),
-					history: [
-						{
-							status: result.status,
-							date: new Date(Number(email.internalDate)).toISOString(),
-							emailId: email.id,
-						},
-					],
-				};
-				await storeJob(newJob);
-				await addToDuplicateIndex(userEmail, {
-					id: newJob.id,
-					jobTitle: newJob.jobTitle,
-				});
-				newJobs++;
-			}
-		}
+		const { newJobs: nj } = await ingestEmail(email, userEmail, jobsById);
+		newJobs += nj;
 	}
 
 	if (scannedIds.length > 0) {
@@ -376,6 +263,9 @@ export function useJobPoller() {
 				newestTs,
 				oldestTs,
 				nextPageToken: listRes.nextPageToken ?? null,
+				nextPageTokenExpiresAt: listRes.nextPageToken
+					? Date.now() + CURSOR_TTL_MS
+					: null,
 			});
 
 			await finalizeBatch(userEmail, newJobs, {
@@ -455,11 +345,16 @@ export function useJobPoller() {
 	}, [accessToken, userEmail, loadJobs, loadScanStats]);
 
 	/**
-	 * Load more: scan the next PAGE_SIZE emails older than the oldest cached.
+	 * Load more: two-pass sync.
 	 *
-	 * Tries pageToken first (efficient). If token expired (API error), falls
-	 * back to a before:date query using the oldest known email timestamp.
-	 * Marks exhausted when no more results exist.
+	 * Pass 1 (new): if >15 min since last sync, walk pages of 25 from the
+	 * newest API email down to the newest email already in the DB (anchor =
+	 * crawl.newestTs). Stops when a page contains an already-scanned email
+	 * (the anchor is always scanned), so no overlap and no missed emails.
+	 *
+	 * Pass 2 (older): one page of 25 older emails via cursor. Tries
+	 * nextPageToken first (2h TTL); expired/missing → before:date query using
+	 * the oldest known email timestamp. Marks exhausted when no more results.
 	 */
 	const loadMore = useCallback(async () => {
 		if (!accessToken || !userEmail || pollingRef.current) return;
@@ -470,12 +365,75 @@ export function useJobPoller() {
 		pollingRef.current = true;
 		setState((s) => ({ ...s, syncing: true, syncError: null }));
 
+		let newJobs = 0;
+
 		try {
+			// ── Pass 1: new emails — only if >15 min since last sync ──
+			const lastSyncMs = Number(
+				localStorage.getItem(`job_sync_ms_${userEmail}`) ?? "0",
+			);
+			if (Date.now() - lastSyncMs >= FORWARD_INTERVAL_MS) {
+				// Anchor: newest email already in the DB (by received date)
+				const anchorTs = crawl.newestTs;
+				let pageToken: string | null = null;
+				let hitAnchor = false;
+				let pages = 0;
+
+				while (!hitAnchor && pages < MAX_FORWARD_PAGES) {
+					pages++;
+					const res = await listMessages(accessToken, {
+						maxResults: PAGE_SIZE,
+						pageToken,
+						onUnauthorized: refreshToken ?? undefined,
+					});
+					const ids = res.messages.map((m) => m.id);
+					if (ids.length === 0) break;
+
+					// Skip pages already fully known — the anchor lives in one of them
+					const scannedFlags = await Promise.all(
+						ids.map((id) => isScanned(userEmail, id)),
+					);
+					const newIds = ids.filter((_, i) => !scannedFlags[i]);
+					if (newIds.length > 0) {
+						const { newJobs: nj, newestTs } = await processEmails(
+							accessToken,
+							userEmail,
+							newIds,
+							(processed, total) =>
+								setState((s) => ({
+									...s,
+									batchProcessed: processed,
+									batchTotal: total,
+								})),
+							refreshToken ?? undefined,
+						);
+						newJobs += nj;
+						if (newestTs !== null) {
+							await setCrawlState(userEmail, {
+								newestTs: Math.max(anchorTs ?? 0, newestTs),
+							});
+						}
+					}
+
+					// First already-scanned email in newest→oldest order = the anchor
+					if (scannedFlags.some(Boolean)) hitAnchor = true;
+					pageToken = res.nextPageToken;
+					if (!pageToken) break;
+				}
+				// Keep the 15-min background poller in sync with this manual pass
+				localStorage.setItem(`job_forward_ms_${userEmail}`, String(Date.now()));
+			}
+
+			// ── Pass 2: older emails — one page via cursor (2h TTL) or before:date ──
 			let listRes;
 			let usedFallback = false;
+			const cursorValid =
+				crawl.nextPageToken &&
+				crawl.nextPageTokenExpiresAt &&
+				Date.now() < crawl.nextPageTokenExpiresAt;
 
-			// 1. Try pageToken first (efficient, no overlap)
-			if (crawl.nextPageToken) {
+			// 1. Try pageToken first (efficient, no overlap) — only if unexpired
+			if (cursorValid) {
 				try {
 					listRes = await listMessages(accessToken, {
 						maxResults: PAGE_SIZE,
@@ -501,7 +459,7 @@ export function useJobPoller() {
 					}
 				}
 			} else if (crawl.oldestTs) {
-				// 2. No pageToken but have oldestTs → date-based direct
+				// 2. No valid cursor but have oldestTs → date-based direct
 				listRes = await listMessages(accessToken, {
 					maxResults: PAGE_SIZE,
 					q: `before:${tsToGmailDate(crawl.oldestTs + 86400000)}`,
@@ -509,9 +467,9 @@ export function useJobPoller() {
 				});
 				usedFallback = true;
 			} else {
-				// 3. No pageToken and no oldestTs — nothing to load
+				// 3. No cursor and no oldestTs — nothing to load
 				setCrawlState(userEmail, { exhausted: true });
-				await finalizeBatch(userEmail, 0, { atEnd: true });
+				await finalizeBatch(userEmail, newJobs, { atEnd: true });
 				return;
 			}
 
@@ -524,7 +482,7 @@ export function useJobPoller() {
 				return;
 			}
 
-			const { newJobs, oldestTs } = await processEmails(
+			const { newJobs: olderJobs, oldestTs } = await processEmails(
 				accessToken,
 				userEmail,
 				ids,
@@ -536,6 +494,7 @@ export function useJobPoller() {
 					})),
 				refreshToken ?? undefined,
 			);
+			newJobs += olderJobs;
 
 			// When using fallback, don't store the returned pageToken (it will also expire).
 			// Next click uses before:date again (dedup via isScanned handles overlap).
@@ -552,9 +511,13 @@ export function useJobPoller() {
 			}
 
 			await setCrawlState(userEmail, {
-				nextPageToken: usedFallback
-					? crawl.nextPageToken
-					: (listRes.nextPageToken ?? null),
+				// Fresh cursor gets a 2h TTL; fallback drops it entirely
+				nextPageToken: usedFallback ? null : (listRes.nextPageToken ?? null),
+				nextPageTokenExpiresAt: usedFallback
+					? null
+					: listRes.nextPageToken
+						? Date.now() + CURSOR_TTL_MS
+						: null,
 				oldestTs:
 					oldestTs !== null
 						? Math.min(crawl.oldestTs ?? Infinity, oldestTs)
@@ -581,17 +544,8 @@ export function useJobPoller() {
 			}));
 		} finally {
 			pollingRef.current = false;
-			// ponytail: also check new emails after loading older, but only if >15 min
-			// since last forward check
-			const lastCheck = Number(
-				localStorage.getItem(`job_forward_ms_${userEmail}`) ?? "0",
-			);
-			if (Date.now() - lastCheck >= 15 * 60 * 1000) {
-				localStorage.setItem(`job_forward_ms_${userEmail}`, String(Date.now()));
-				checkNewEmails();
-			}
 		}
-	}, [accessToken, userEmail, loadJobs, loadScanStats, checkNewEmails]);
+	}, [accessToken, userEmail, loadJobs, loadScanStats]);
 
 	// --- Initial sync on mount if never synced ---
 	useEffect(() => {
@@ -674,7 +628,7 @@ export function useJobPoller() {
 		statusCounts,
 		loaded,
 		state,
-		/** Load next 50 older emails */
+		/** Load next batch — new emails first (if stale), then older emails */
 		loadMore,
 		/** Check for new emails (hourly poll calls this) */
 		checkNewEmails,
@@ -691,6 +645,8 @@ interface CrawlState {
 	newestTs: number | null;
 	oldestTs: number | null;
 	nextPageToken: string | null;
+	/** Cursor expiry (epoch ms) — pageTokens go stale after 2h. */
+	nextPageTokenExpiresAt: number | null;
 	totalJobs: number;
 	totalEstimate: number;
 	exhausted: boolean;
@@ -708,6 +664,7 @@ function getCrawlState(userEmail: string): CrawlState {
 		newestTs: null,
 		oldestTs: null,
 		nextPageToken: null,
+		nextPageTokenExpiresAt: null,
 		totalJobs: 0,
 		totalEstimate: 0,
 		exhausted: false,
@@ -722,6 +679,7 @@ function setCrawlState(
 			| "newestTs"
 			| "oldestTs"
 			| "nextPageToken"
+			| "nextPageTokenExpiresAt"
 			| "totalJobs"
 			| "totalEstimate"
 			| "exhausted"

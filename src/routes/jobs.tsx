@@ -483,7 +483,7 @@ function JobsContent() {
 							data-icon="inline-start"
 							className={state.syncing ? "animate-spin" : ""}
 						/>
-						{state.atEnd ? "All loaded" : "Load Older"}
+						{state.atEnd ? "All loaded" : "Load More"}
 					</Button>
 				</div>
 			</div>
