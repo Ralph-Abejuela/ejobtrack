@@ -38,9 +38,9 @@ function RouteComponent() {
               ralphabejuela.com
             </a>
             <p className="text-sm text-muted-foreground max-w-64 pt-1">
-              Full-stack developer (BSIT, Cum Laude) and former DOST scholar.
-              I build tools that respect the people using them — like this
-              tracker, where your data never leaves your device.
+              Full-stack developer (BSIT, Cum Laude). I build tools that
+              respect the people using them — like this tracker, where your
+              data never leaves your device.
             </p>
           </div>
           <div className="flex gap-2 pt-4">
