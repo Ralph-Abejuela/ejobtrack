@@ -30,14 +30,6 @@ function RouteComponent() {
             >
               abejuela.ralph.balatucan@gmail.com
             </a>
-            <a
-              href="https://ralphabejuela.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-light hover:underline md:block hidden"
-            >
-              ralphabejuela.com
-            </a>
             <p className="text-sm text-muted-foreground max-w-64 pt-1">
               Full-stack developer (BSIT, Cum Laude). I build tools that
               respect the people using them — like this tracker, where your
