@@ -1,7 +1,6 @@
 import LinkedIn from "@/components/LinkedIn";
 import { createFileRoute } from "@tanstack/react-router";
-import { MailIcon } from "lucide-react";
-import { siGithub } from "simple-icons";
+import { siGithub, siGmail } from "simple-icons";
 
 export const Route = createFileRoute("/contact")({
   component: RouteComponent,
@@ -30,6 +29,19 @@ function RouteComponent() {
             >
               abejuela.ralph.balatucan@gmail.com
             </a>
+            <a
+              href="https://ralphabejuela.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-light hover:underline md:block hidden"
+            >
+              ralphabejuela.com
+            </a>
+            <p className="text-sm text-muted-foreground max-w-64 pt-1">
+              Full-stack developer (BSIT, Cum Laude). I build tools that
+              respect the people using them — like this tracker, where your
+              data never leaves your device.
+            </p>
           </div>
           <div className="flex gap-2 pt-4">
             <a
@@ -52,8 +64,17 @@ function RouteComponent() {
                 <path d={siGithub.path} />
               </svg>
             </a>
-            <a>
-              <MailIcon className="size-10 p-0.5 pb-1 stroke-1" />
+            <a
+              href="mailto:abejuela.ralph.balatucan@gmail.com"
+              aria-label="Email"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="p-1 size-10 fill-current"
+                aria-hidden="true"
+              >
+                <path d={siGmail.path} />
+              </svg>
             </a>
           </div>
         </div>
